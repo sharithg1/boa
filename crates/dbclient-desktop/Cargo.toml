@@ -1,0 +1,31 @@
+[package]
+name = "dbclient-desktop"
+description = "Database client desktop app (Tauri, Rust side). Frontend lives in ./ui"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+default-run = "dbclient-desktop"
+
+[lib]
+name = "dbclient_desktop"
+path = "src/lib.rs"
+
+[[bin]]
+name = "dbclient-desktop"
+path = "src/main.rs"
+
+[build-dependencies]
+tauri-build.workspace = true
+
+[dependencies]
+tauri.workspace = true
+tauri-plugin-dialog.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+
+[lints]
+workspace = true

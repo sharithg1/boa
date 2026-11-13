@@ -1,0 +1,341 @@
+/* Theme tokens. Values follow the "Civet Workspace v3, carried over from Civet" design (neutral dark
+   chrome around a near-black terminal area, Geist / Geist Mono, oklch status
+   colours); structure, terminal rules and the full shadcn/ui token set
+   (new-york-v4, neutral, css variables; see ../../components.json) were
+   ported from Orca's main.css + terminal.css, so `shadcn add` components work
+   unchanged. Fonts are bundled (@fontsource-variable, imported in main.tsx)
+   so the Tauri app renders them offline. */
+@import 'tailwindcss';
+@import 'tw-animate-css';
+
+@custom-variant dark (&:is(.dark *));
+
+/* Type scale. Anchored on the terminal (Geist Mono 13px, terminal-options.ts):
+   UI body text is the same 13px so chrome and terminal read at one size.
+   Geist and Geist Mono share metrics, so mono labels use the same steps.
+     2xs 11  meta: keycaps, counts, latency, status bar
+     xs  12  secondary: sub-labels, descriptions, small buttons
+     sm  13  body: rows, tabs, menus, inputs, buttons (= terminal)
+     base 14 group headers, dialog titles, the switcher input
+     lg  16  page headings, "+" glyphs
+     xl  20  settings page title
+   Weights: 400 body, 500 selected / emphasis, 600 headings and the wordmark. */
+@theme {
+  --text-2xs: 11px;
+  --text-2xs--line-height: 16px;
+  --text-xs: 12px;
+  --text-xs--line-height: 18px;
+  --text-sm: 13px;
+  --text-sm--line-height: 20px;
+  --text-base: 14px;
+  --text-base--line-height: 20px;
+  --text-lg: 16px;
+  --text-lg--line-height: 24px;
+  --text-xl: 20px;
+  --text-xl--line-height: 28px;
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --color-chart-1: var(--chart-1);
+  --color-chart-2: var(--chart-2);
+  --color-chart-3: var(--chart-3);
+  --color-chart-4: var(--chart-4);
+  --color-chart-5: var(--chart-5);
+  --color-sidebar: var(--sidebar);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar-primary: var(--sidebar-primary);
+  --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+  --color-sidebar-accent: var(--sidebar-accent);
+  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+  --color-sidebar-border: var(--sidebar-border);
+  --color-sidebar-ring: var(--sidebar-ring);
+  --color-agent-question: var(--agent-question);
+  --color-agent-question-text: var(--agent-question-text);
+  --color-worktree-sidebar: var(--worktree-sidebar);
+  --color-worktree-sidebar-foreground: var(--worktree-sidebar-foreground);
+  --color-worktree-sidebar-accent: var(--worktree-sidebar-accent);
+  --color-worktree-sidebar-accent-foreground: var(--worktree-sidebar-accent-foreground);
+  --color-worktree-sidebar-border: var(--worktree-sidebar-border);
+  --color-terminal-pane-title-on-dark-fg: var(--terminal-pane-title-on-dark-fg);
+  --color-terminal-pane-title-on-dark-button-fg: var(--terminal-pane-title-on-dark-button-fg);
+  --color-terminal-pane-title-on-dark-button-hover-fg: var(
+    --terminal-pane-title-on-dark-button-hover-fg
+  );
+  --color-tab-group-split-divider: var(--tab-group-split-divider);
+  --color-tab-group-split-divider-strong: var(--tab-group-split-divider-strong);
+  /* v3 design tokens */
+  --color-chrome: var(--chrome);
+  --color-field: var(--field);
+  --color-hover: var(--hover);
+  --color-hover-strong: var(--hover-strong);
+  --color-border-subtle: var(--border-subtle);
+  --color-border-strong: var(--border-strong);
+  --color-body: var(--body);
+  --color-soft: var(--soft);
+  --color-quiet: var(--quiet);
+  --color-faint: var(--faint);
+  --color-dim: var(--dim);
+  --color-ghost: var(--ghost);
+  --color-status-run: var(--status-run);
+  --color-status-wait: var(--status-wait);
+  --color-status-err: var(--status-err);
+  --color-status-ok: var(--status-ok);
+  --color-pr-merged: var(--pr-merged);
+  --color-status-err-text: var(--status-err-text);
+  --color-prompt-user: var(--prompt-user);
+  --color-prompt-path: var(--prompt-path);
+  --color-link: var(--link);
+  --color-scrim: var(--scrim);
+  --shadow-floating: 0 12px 40px rgb(0 0 0 / 0.45);
+  --shadow-menu: 0 8px 28px rgb(0 0 0 / 0.45), 0 0 0 1px rgb(255 255 255 / 0.06);
+  --shadow-dialog: 0 24px 70px rgb(0 0 0 / 0.6);
+  --shadow-palette: 0 16px 60px rgb(0 0 0 / 0.6);
+  --radius-sm: calc(var(--radius) * 0.6);
+  --radius-md: calc(var(--radius) * 0.8);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) * 1.4);
+}
+
+/* ── Light ─────────────────────────────────────────────── */
+:root {
+  /* UI text uses the platform font (SF Pro on macOS), as Cursor does; code,
+     branches and the terminal stay on Geist Mono. */
+  --font-sans:
+    -apple-system, BlinkMacSystemFont, 'Inter', 'Segoe UI', 'Geist Variable', system-ui, sans-serif;
+  --font-mono:
+    'Geist Mono Variable', 'Geist Mono', 'SF Mono', SFMono-Regular, ui-monospace, Menlo, Consolas,
+    monospace;
+  /* sm ≈ 5px (chips), md ≈ 6px (rows, pills), lg ≈ 8px (menus, cards), xl ≈ 11px (dialogs, inputs). */
+  --radius: 0.5rem;
+  /* Project tiles: oklch(var(--tile-l) var(--tile-c) <hue per project>). */
+  --tile-l: 0.76;
+  --tile-c: 0.09;
+  --background: #fff;
+  --foreground: #0a0a0a;
+  --card: #fff;
+  --card-foreground: #0a0a0a;
+  --popover: #fff;
+  --popover-foreground: #0a0a0a;
+  --primary: #171717;
+  --primary-foreground: #fafafa;
+  --secondary: #f5f5f5;
+  --secondary-foreground: #171717;
+  --muted: #f5f5f5;
+  --muted-foreground: #737373;
+  --accent: #f5f5f5;
+  --accent-foreground: #171717;
+  --destructive: #e7000b;
+  --border: #e5e5e5;
+  --input: #e5e5e5;
+  --ring: #a1a1a1;
+  --chart-1: var(--color-blue-300);
+  --chart-2: var(--color-blue-500);
+  --chart-3: var(--color-blue-600);
+  --chart-4: var(--color-blue-700);
+  --chart-5: var(--color-blue-800);
+  --sidebar: #fafafa;
+  --sidebar-foreground: #0a0a0a;
+  --sidebar-primary: #171717;
+  --sidebar-primary-foreground: #fafafa;
+  --sidebar-accent: #f5f5f5;
+  --sidebar-accent-foreground: #171717;
+  --sidebar-border: #e5e5e5;
+  --sidebar-ring: #a1a1a1;
+  --agent-question: var(--color-orange-600);
+  --agent-question-text: var(--color-orange-700);
+  --worktree-sidebar: #f5f5f5;
+  --worktree-sidebar-foreground: #0a0a0a;
+  --worktree-sidebar-accent: #eaeaea;
+  --worktree-sidebar-accent-foreground: #171717;
+  --worktree-sidebar-border: #e5e5e5;
+  --terminal-pane-title-on-dark-fg: rgb(255 255 255 / 0.52);
+  --terminal-pane-title-on-dark-button-fg: rgb(255 255 255);
+  --terminal-pane-title-on-dark-button-hover-fg: rgb(255 255 255);
+  --tab-group-split-divider: #a1a1aa;
+  --tab-group-split-divider-strong: #71717a;
+  --orca-terminal-divider-color: rgb(255 255 255 / 0.08);
+  --orca-terminal-divider-color-strong: rgb(255 255 255 / 0.25);
+  --chrome: #f5f5f5;
+  --field: #fff;
+  --hover: rgb(0 0 0 / 0.04);
+  --hover-strong: rgb(0 0 0 / 0.07);
+  --border-subtle: rgb(0 0 0 / 0.05);
+  --border-strong: rgb(0 0 0 / 0.18);
+  --body: #171717;
+  --soft: #262626;
+  --quiet: #525252;
+  --faint: #737373;
+  --dim: #a1a1a1;
+  --ghost: #d4d4d4;
+  --status-run: oklch(0.6 0.15 250);
+  --status-wait: oklch(0.7 0.15 75);
+  --status-err: oklch(0.6 0.19 25);
+  --status-ok: oklch(0.62 0.14 155);
+  --status-err-text: oklch(0.55 0.17 25);
+  --pr-merged: oklch(0.55 0.18 295);
+  --prompt-user: oklch(0.55 0.12 110);
+  --prompt-path: oklch(0.5 0.12 250);
+  --link: #2563eb;
+  --scrim: rgb(0 0 0 / 0.3);
+}
+
+/* ── Dark (default) ────────────────────────────────────── */
+/* Cursor-style dark: a slightly lifted sidebar (#181819) beside a flat
+   #151616 work area, hairline #262727 borders, #212121 raised surfaces
+   (cards, inputs, selected pills) and a four-step grey text scale
+   (#f0f0f0 / #b8b8b8 / #999 / #6b6b6b). Values sampled from Cursor 2. */
+.dark {
+  --background: #151616;
+  --foreground: #f0f0f0;
+  --card: #212121;
+  --card-foreground: #f0f0f0;
+  --popover: #1f1f1f;
+  --popover-foreground: #f0f0f0;
+  --primary: #f0f0f0;
+  --primary-foreground: #151616;
+  --secondary: #252626;
+  --secondary-foreground: #f0f0f0;
+  --muted: #252626;
+  --muted-foreground: #999999;
+  --accent: #252626;
+  --accent-foreground: #f0f0f0;
+  --destructive: #f07178;
+  --border: #262727;
+  --input: #313131;
+  --ring: #599de7;
+  --chart-1: var(--color-blue-300);
+  --chart-2: var(--color-blue-500);
+  --chart-3: var(--color-blue-600);
+  --chart-4: var(--color-blue-700);
+  --chart-5: var(--color-blue-800);
+  --sidebar: #181819;
+  --sidebar-foreground: #b8b8b8;
+  --sidebar-primary: #f0f0f0;
+  --sidebar-primary-foreground: #151616;
+  --sidebar-accent: #252626;
+  --sidebar-accent-foreground: #f0f0f0;
+  --sidebar-border: #262727;
+  --sidebar-ring: #599de7;
+  --agent-question: #f1b567;
+  --agent-question-text: #f1b567;
+  --worktree-sidebar: #181819;
+  --worktree-sidebar-foreground: #b8b8b8;
+  --worktree-sidebar-accent: #252626;
+  --worktree-sidebar-accent-foreground: #f0f0f0;
+  --worktree-sidebar-border: #262727;
+  --tab-group-split-divider: #3a3b3b;
+  --tab-group-split-divider-strong: #599de7;
+  --terminal-pane-title-on-dark-fg: #999999;
+  --orca-terminal-divider-color: #262727;
+  --orca-terminal-divider-color-strong: #599de7;
+  /* Surfaces and text scale */
+  --chrome: #181819;
+  --field: #212121;
+  --hover: rgb(255 255 255 / 0.035);
+  --hover-strong: rgb(255 255 255 / 0.07);
+  --border-subtle: #212121;
+  --border-strong: #3a3b3b;
+  --body: #f0f0f0;
+  --soft: #b8b8b8;
+  --quiet: #999999;
+  --faint: #8a8a8a;
+  --dim: #6b6b6b;
+  --ghost: #444546;
+  /* Agent status (dots, toasts). */
+  --status-run: #599de7;
+  --status-wait: #f1b567;
+  --status-err: #f07178;
+  --status-ok: #6fcf97;
+  --status-err-text: #f49a9f;
+  /* Merged PR icon (open / closed reuse status-ok / status-err). */
+  --pr-merged: #a78bfa;
+  --prompt-user: #b5bd68;
+  --prompt-path: #7bafe9;
+  --link: #7bafe9;
+  --scrim: rgb(0 0 0 / 0.5);
+  --scrim-palette: rgb(0 0 0 / 0.45);
+}
+
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+  }
+  html,
+  body,
+  #root {
+    height: 100%;
+    margin: 0;
+    overflow: hidden;
+  }
+  body {
+    @apply bg-chrome text-body antialiased;
+    font-family: var(--font-sans);
+    font-size: var(--text-sm);
+    line-height: var(--text-sm--line-height);
+    -webkit-user-select: none;
+    user-select: none;
+  }
+  input,
+  textarea,
+  select {
+    -webkit-user-select: text;
+    user-select: text;
+  }
+}
+
+::selection {
+  background: rgb(89 157 231 / 0.35);
+}
+::-webkit-scrollbar {
+  width: 9px;
+  height: 9px;
+}
+::-webkit-scrollbar-thumb {
+  background: rgb(255 255 255 / 0.1);
+  border-radius: 5px;
+  border: 2px solid transparent;
+  background-clip: padding-box;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+.no-scrollbar {
+  scrollbar-width: none;
+}
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+
+/* Keep rotation on the compositor (Orca #12359). One day per iteration avoids
+   per-second animation events; still 12 steps/second. */
+@keyframes agent-spinner-rotate {
+  to {
+    transform: rotate(86400turn);
+  }
+}
+.agent-working-spinner {
+  animation: agent-spinner-rotate 86400s steps(1036800, end) infinite;
+}
+@media (prefers-reduced-motion: reduce) {
+  .agent-working-spinner {
+    animation: none;
+  }
+}

@@ -1,4 +1,5 @@
 import { useEffect } from 'react'
+import { BottomPanel } from './components/BottomPanel'
 import { CommandPalette } from './components/CommandPalette'
 import { RightPanel } from './components/RightPanel'
 import { SettingsView } from './components/SettingsView'
@@ -20,21 +21,25 @@ import {
 export function App() {
   const sidebarOpen = useStore((s) => s.sidebarOpen)
   const rightPanelOpen = useStore((s) => s.rightPanelOpen)
+  const bottomOpen = useStore((s) => s.bottomOpen)
 
   useShortcuts()
 
   return (
-    // Cursor-style columns: the sidebar and the right panel run the full
-    // window height with their own header rows; the main column stacks its
-    // header (tabs), the workspace and a footer line.
-    <div className="relative flex h-full w-full overflow-hidden bg-background">
-      {sidebarOpen && <Sidebar />}
-      <div className="flex min-w-0 flex-1 flex-col">
-        <TitleBar />
-        <Workspace />
-        <StatusBar />
+    // DataGrip-style tool windows: Database Explorer on the left, the editor
+    // (tabs over the active console or table) in the middle and the right
+    // panel, above a full-width Database Output panel and status bar.
+    <div className="relative flex h-full w-full flex-col overflow-hidden bg-background">
+      <div className="flex min-h-0 flex-1">
+        {sidebarOpen && <Sidebar />}
+        <div className="flex min-w-0 flex-1 flex-col">
+          <TitleBar />
+          <Workspace />
+        </div>
+        {rightPanelOpen && <RightPanel />}
       </div>
-      {rightPanelOpen && <RightPanel />}
+      {bottomOpen && <BottomPanel />}
+      <StatusBar />
       <SettingsView />
       <CommandPalette />
       <Toasts />
@@ -59,7 +64,7 @@ function isOptionShortcut(e: KeyboardEvent): boolean {
 /**
  * Cmd/Ctrl+K search, +T new query, +W close tab, +O new connection,
  * +, settings; ⌥↑↓ previous / next database, ⌥1-9 tab, ⌥N new query,
- * ⌥B sidebar, ⌥E right panel.
+ * ⌥B sidebar, ⌥E right panel, ⌥J Database Output.
  */
 function useShortcuts() {
   useEffect(() => {
@@ -105,6 +110,7 @@ function useShortcuts() {
       if (c === 'ArrowDown' || c === 'ArrowUp')
         action = () => cycleDatabase(c === 'ArrowDown' ? 1 : -1)
       else if (c === 'KeyB') action = () => useStore.setState({ sidebarOpen: !state.sidebarOpen })
+      else if (c === 'KeyJ') action = () => useStore.setState({ bottomOpen: !state.bottomOpen })
       else if (c === 'KeyE')
         action = () => useStore.setState({ rightPanelOpen: !state.rightPanelOpen })
       else if (active && /^Digit[1-9]$/.test(c))

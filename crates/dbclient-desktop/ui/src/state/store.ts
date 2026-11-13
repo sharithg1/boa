@@ -5,7 +5,9 @@
 
 import { create } from 'zustand'
 import { sampleConnections } from './mock'
-import type { Connection, HistoryEntry, Table } from './types'
+import { execute } from './mockData'
+import { usePrefs } from './prefs'
+import type { Connection, HistoryEntry, ResultSet, Table } from './types'
 
 export type QueryTab = { id: string; kind: 'query'; title: string; sql: string }
 export type TableTab = {
@@ -44,6 +46,16 @@ type State = {
   history: Record<string, HistoryEntry[]>
   sidebarOpen: boolean
   rightPanelOpen: boolean
+  /** Bottom "Database Output" tool window. */
+  bottomOpen: boolean
+  /** What it shows: the Output log, or the result of an editor tab (by tab id). */
+  bottomView: 'output' | string
+  /** Latest result of each editor tab, by tab id. */
+  results: Record<string, ResultSet>
+  /** Tabs with a statement in flight, by tab id. */
+  running: Record<string, true>
+  /** Caret of the focused SQL editor (1-based), for the status bar. */
+  cursor: { line: number; col: number } | null
   paletteOpen: boolean
   settings: SettingsPage | null
   toasts: Toast[]
@@ -61,6 +73,11 @@ export const useStore = create<State>(() => ({
   history: {},
   sidebarOpen: true,
   rightPanelOpen: typeof window === 'undefined' || window.innerWidth >= 1100,
+  bottomOpen: true,
+  bottomView: 'output',
+  results: {},
+  running: {},
+  cursor: null,
   paletteOpen: false,
   settings: null,
   toasts: []
@@ -159,8 +176,11 @@ export function newQueryTab(connectionId: string, database: string, sql = '') {
   const key = dbKey(connectionId, database)
   selectDatabase(connectionId, database)
   patchWorkspace(key, (ws) => {
-    const n = ws.tabs.filter((t) => t.kind === 'query').length + 1
-    const tab: QueryTab = { id: newId('q'), kind: 'query', title: `Query ${n}`, sql }
+    // DataGrip-style console names: the lowest free console_N.
+    const used = new Set(ws.tabs.map((t) => (t.kind === 'query' ? t.title : '')))
+    let n = 1
+    while (used.has(`console_${n}`)) n++
+    const tab: QueryTab = { id: newId('q'), kind: 'query', title: `console_${n}`, sql }
     return { tabs: [...ws.tabs, tab], activeTab: tab.id }
   })
 }
@@ -192,6 +212,12 @@ export function pinTab(key: string, id: string) {
 }
 
 export function closeTab(key: string, id: string) {
+  cancelQuery(id)
+  useStore.setState((s) => {
+    if (!s.results[id]) return {}
+    const { [id]: _, ...results } = s.results
+    return { results, bottomView: s.bottomView === id ? 'output' : s.bottomView }
+  })
   patchWorkspace(key, (ws) => {
     const i = ws.tabs.findIndex((t) => t.id === id)
     if (i < 0) return ws
@@ -272,26 +298,102 @@ export function connectionString(c: Connection, database?: string): string {
 
 // ── Queries (simulated) ───────────────────────────────────────────────────
 
-export function runQuery(connectionId: string, database: string, sql: string) {
-  const text = sql.trim()
-  if (!text) return
-  const ms = 4 + Math.round(Math.random() * 80)
-  const rows = /^\s*select/i.test(text) ? Math.round(Math.random() * 200) : null
-  const entry: HistoryEntry = { id: nextId++, sql: text, database, at: Date.now(), ms, rows }
+const timers: Record<string, ReturnType<typeof setTimeout>> = {}
+
+function log(connectionId: string, entry: HistoryEntry) {
   useStore.setState((s) => ({
     history: {
       ...s.history,
       [connectionId]: [entry, ...(s.history[connectionId] ?? [])].slice(0, 200)
     }
   }))
-  pushToast(
-    {
-      kind: 'success',
-      title: rows != null ? `${rows} rows in ${ms} ms` : `Done in ${ms} ms`,
-      body: 'Simulated: no database backend yet'
-    },
-    3200
-  )
+}
+
+/**
+ * Runs one statement for an editor tab (simulated against state/mockData.ts):
+ * rows land in the tab's result and the bottom panel switches to it; other
+ * statements and errors are logged to the Output view.
+ */
+export function runQuery(
+  connectionId: string,
+  database: string,
+  tabId: string,
+  title: string,
+  sql: string
+) {
+  const text = sql.trim()
+  if (!text || useStore.getState().running[tabId]) return
+  const conn = useStore.getState().connections[connectionId]
+  const at = Date.now()
+  if (conn?.state !== 'connected') {
+    log(connectionId, {
+      id: nextId++,
+      sql: text,
+      database,
+      at,
+      ms: 0,
+      rows: null,
+      source: title,
+      error: `${conn?.name ?? 'Connection'} is not connected`
+    })
+    useStore.setState({ bottomOpen: true, bottomView: 'output' })
+    return
+  }
+  const ms = 4 + Math.round(Math.random() * (/^\s*select/i.test(text) ? 600 : 80))
+  useStore.setState((s) => ({ running: { ...s.running, [tabId]: true } }))
+  timers[tabId] = setTimeout(() => {
+    delete timers[tabId]
+    useStore.setState((s) => {
+      const { [tabId]: _, ...running } = s.running
+      return { running }
+    })
+    const db = useStore
+      .getState()
+      .connections[connectionId]?.databases.find((d) => d.name === database)
+    const res = execute(db, text, usePrefs.getState().rowLimit)
+    const base = { id: nextId++, sql: text, database, at, ms, source: title }
+    if (res.kind === 'error') {
+      log(connectionId, { ...base, rows: null, error: res.message })
+      useStore.setState({ bottomOpen: true, bottomView: 'output' })
+    } else if (res.kind === 'affected') {
+      log(connectionId, { ...base, rows: null, affected: res.count })
+      useStore.setState({ bottomOpen: true, bottomView: 'output' })
+    } else {
+      log(connectionId, { ...base, rows: res.rows.length })
+      const result: ResultSet = {
+        tabId,
+        title: res.table ?? title,
+        sql: text,
+        columns: res.columns,
+        rows: res.rows,
+        ms,
+        at
+      }
+      useStore.setState((s) => ({
+        results: { ...s.results, [tabId]: result },
+        bottomOpen: true,
+        bottomView: tabId
+      }))
+    }
+  }, ms)
+}
+
+export function cancelQuery(tabId: string) {
+  const t = timers[tabId]
+  if (!t) return
+  clearTimeout(t)
+  delete timers[tabId]
+  useStore.setState((s) => {
+    const { [tabId]: _, ...running } = s.running
+    return { running }
+  })
+}
+
+export function closeResult(tabId: string) {
+  useStore.setState((s) => {
+    const { [tabId]: _, ...results } = s.results
+    return { results, bottomView: s.bottomView === tabId ? 'output' : s.bottomView }
+  })
 }
 
 // ── Toasts ────────────────────────────────────────────────────────────────

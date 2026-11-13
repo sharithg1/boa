@@ -26,10 +26,10 @@ export type Prefs = {
   recentCount: number
   /** Sidebar layout (drag to reorder): connection ids; those not listed follow. */
   connectionOrder: string[]
-  /** Collapsed connections in the sidebar. */
-  collapsedConnections: Record<string, true>
-  /** Collapsed databases in the sidebar, by `dbKey(connectionId, database)`. */
-  collapsedDatabases: Record<string, true>
+  /** Expanded Database Explorer nodes, by tree path (see Sidebar `nodeId`). */
+  treeExpanded: Record<string, true>
+  /** Bottom panel (Database Output) height in px, as last dragged. */
+  bottomHeight: number
   /** Sidebar width in px, as last dragged. */
   sidebarWidth: number
   /** Right panel width in px, as last dragged. */
@@ -41,8 +41,8 @@ export type Prefs = {
 /** Fields kept by "Reset to defaults": layout, not settings. */
 const KEPT_ON_RESET = [
   'connectionOrder',
-  'collapsedConnections',
-  'collapsedDatabases',
+  'treeExpanded',
+  'bottomHeight',
   'sidebarWidth',
   'rightPanelWidth',
   'rightTab'
@@ -55,14 +55,19 @@ export const DEFAULT_PREFS: Prefs = {
   sidebarViews: true,
   recentCount: 5,
   connectionOrder: [],
-  collapsedConnections: {},
-  collapsedDatabases: {},
+  treeExpanded: {
+    'prod-pg': true,
+    'prod-pg/app_production': true,
+    'prod-pg/app_production/public': true,
+    'prod-pg/app_production/public/#table': true
+  },
+  bottomHeight: 280,
   sidebarWidth: 260,
   rightPanelWidth: 340,
   rightTab: 'structure'
 }
 
-const KEY = 'dbclient.prefs.v1'
+const KEY = 'dbclient.prefs.v2'
 
 const RIGHT_TABS: RightTab[] = ['structure', 'info', 'history']
 
@@ -122,4 +127,14 @@ export function applyOrder(ids: readonly string[], order: readonly string[] | un
   const rank = new Map(order.map((id, i) => [id, i]))
   const known = ids.filter((id) => rank.has(id)).sort((a, b) => rank.get(a)! - rank.get(b)!)
   return [...known, ...ids.filter((id) => !rank.has(id))]
+}
+
+/** Bottom panel height limits for the drag handle. */
+export const BOTTOM_MIN_HEIGHT = 120
+export const BOTTOM_MAX_HEIGHT = 900
+
+export function clampBottomHeight(px: number): number {
+  if (!Number.isFinite(px)) return DEFAULT_PREFS.bottomHeight
+  const max = typeof window === 'undefined' ? BOTTOM_MAX_HEIGHT : window.innerHeight - 200
+  return Math.round(Math.min(Math.min(BOTTOM_MAX_HEIGHT, max), Math.max(BOTTOM_MIN_HEIGHT, px)))
 }

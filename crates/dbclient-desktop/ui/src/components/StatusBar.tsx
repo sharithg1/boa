@@ -1,7 +1,8 @@
-// Footer of the main column, like the line under Cursor's composer: the
-// selected database, the active connection + latency (click for the
-// connection popover) and, on the right, what the active tab shows.
-import { ChevronDown, Database, Server } from 'lucide-react'
+// Full-width footer, after DataGrip's status bar: the Database Output toggle,
+// breadcrumbs of the active tab (connection › database › schema › table, or
+// the console), and on the right the caret position / row estimate and the
+// active connection + latency (click for the connection popover).
+import { ChevronDown, ChevronRight, PanelBottom, Server } from 'lucide-react'
 import {
   connect,
   connectionString,
@@ -12,6 +13,8 @@ import {
   useStore
 } from '@/state/store'
 import { ENGINE_LABEL } from '@/lib/format'
+import { cn } from '@/lib/utils'
+import { IconButton } from './IconButton'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import { ConnStateDot, connMeta } from './Sidebar'
 
@@ -19,6 +22,8 @@ export function StatusBar() {
   const active = useStore((s) => s.active)
   const order = useStore((s) => s.connectionOrder)
   const connections = useStore((s) => s.connections)
+  const bottomOpen = useStore((s) => s.bottomOpen)
+  const cursor = useStore((s) => s.cursor)
   const connId = active?.connectionId ?? order[0]
   const conn = connId ? connections[connId] : undefined
   const tab = useStore((s) => {
@@ -26,27 +31,53 @@ export function StatusBar() {
     const ws = s.workspaces[dbKey(s.active.connectionId, s.active.database)]
     return ws?.tabs.find((t) => t.id === ws.activeTab)
   })
-  const connectedCount = order.filter((id) => connections[id]?.state === 'connected').length
-  let right = `${connectedCount} connection${connectedCount === 1 ? '' : 's'} open`
+  // DataGrip-style breadcrumbs: connection › database › schema › table / console.
+  const crumbs: string[] = []
+  if (active) {
+    crumbs.push(connections[active.connectionId]?.name ?? '', active.database)
+    if (tab?.kind === 'table') crumbs.push(tab.schema, tab.table)
+    else if (tab?.kind === 'query') crumbs.push(tab.title)
+  }
+  let right = ''
   if (active && tab?.kind === 'table') {
     const t = findTable(active.connectionId, active.database, tab.schema, tab.table)
-    right = `${tab.schema}.${tab.table}${t ? ` · ~${t.rows.toLocaleString()} rows` : ''}`
-  } else if (tab?.kind === 'query') {
-    const lines = tab.sql ? tab.sql.split('\n').length : 0
-    right = `${tab.title} · ${lines} line${lines === 1 ? '' : 's'}`
+    right = t ? `~${t.rows.toLocaleString()} rows` : ''
+  } else if (tab?.kind === 'query' && cursor) {
+    right = `${cursor.line}:${cursor.col}`
   }
   return (
-    <footer className="flex h-8 shrink-0 items-center gap-1 overflow-hidden bg-background px-2 text-sm whitespace-nowrap text-quiet">
-      {active && (
-        <span className="flex h-6 min-w-0 items-center gap-1.5 px-1.5">
-          <Database className="size-3.5 shrink-0" />
-          <span className="truncate font-mono text-xs text-soft">{active.database}</span>
-        </span>
-      )}
+    <footer className="flex h-8 shrink-0 items-center gap-1 overflow-hidden border-t border-border bg-background px-2 text-sm whitespace-nowrap text-quiet">
+      <IconButton
+        label={bottomOpen ? 'Hide Database Output (⌥J)' : 'Show Database Output (⌥J)'}
+        side="top"
+        aria-pressed={bottomOpen}
+        className={cn(bottomOpen && 'text-foreground')}
+        onClick={() => useStore.setState((s) => ({ bottomOpen: !s.bottomOpen }))}
+      >
+        <PanelBottom className="size-4" />
+      </IconButton>
+      <nav aria-label="Breadcrumbs" className="flex min-w-0 items-center gap-1 px-1">
+        {crumbs.map((c, i) => (
+          <span key={`${i}-${c}`} className="flex min-w-0 items-center gap-1">
+            {i > 0 && <ChevronRight className="size-3 shrink-0 text-dim" />}
+            <span
+              className={cn(
+                'truncate',
+                i === crumbs.length - 1 ? 'text-soft' : 'text-quiet',
+                i > 0 && 'font-mono text-xs'
+              )}
+            >
+              {c}
+            </span>
+          </span>
+        ))}
+        {!active && <span className="text-dim">No database selected</span>}
+      </nav>
+      <span className="flex-1" />
+      {right && <span className="truncate px-1.5 font-mono text-xs text-dim">{right}</span>}
+      {tab?.kind === 'query' && <span className="px-1.5 text-xs text-dim">UTF-8</span>}
       {conn && connId && <ConnectionPopover connectionId={connId} />}
       {!conn && <span className="px-1.5">no connection</span>}
-      <span className="flex-1" />
-      <span className="truncate px-1.5 text-dim">{right}</span>
     </footer>
   )
 }
@@ -66,7 +97,7 @@ function ConnectionPopover({ connectionId }: { connectionId: string }) {
       </PopoverTrigger>
       <PopoverContent
         side="top"
-        align="start"
+        align="end"
         sideOffset={6}
         className="flex w-[280px] flex-col gap-2 px-3.5 py-3 text-xs"
       >

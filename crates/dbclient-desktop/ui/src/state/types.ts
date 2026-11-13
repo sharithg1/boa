@@ -47,5 +47,24 @@ export type HistoryEntry = {
   at: number
   ms: number
   rows: number | null
+  /** Affected rows, for statements that return none. */
+  affected?: number
+  /** Editor tab title it ran from (`console_1`). */
+  source?: string
   error?: string
+}
+
+export type ResultColumn = { name: string; type: string }
+
+/** One executed statement's rows, shown in the Database Output grid. */
+export type ResultSet = {
+  /** Editor tab that produced it. */
+  tabId: string
+  /** Label of the result tab: `db.schema.table` or the console name. */
+  title: string
+  sql: string
+  columns: ResultColumn[]
+  rows: (string | null)[][]
+  ms: number
+  at: number
 }

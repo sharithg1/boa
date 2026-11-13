@@ -198,3 +198,14 @@ function identKind(
   if (catalog.columns.has(lower)) return 'column'
   return 'plain'
 }
+
+/** An identifier as SQL: bare when it is a plain lower-case name, else "double-quoted". */
+export function quoteIdent(name: string): string {
+  return /^[a-z_][a-z0-9_$]*$/.test(name) && !KEYWORDS.has(name)
+    ? name
+    : `"${name.replace(/"/g, '""')}"`
+}
+
+/** `schema.table`, each part quoted as needed. */
+export const qualified = (schema: string, table: string) =>
+  `${quoteIdent(schema)}.${quoteIdent(table)}`

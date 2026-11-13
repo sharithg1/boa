@@ -1,11 +1,10 @@
 // App state (zustand): connections and their schemas, the selected
 // database, its tabs (queries and open tables), panel toggles, overlays and
-// toasts. Connection actions are simulated against state/mock.ts until the
-// Rust side has drivers.
+// toasts. Connections, introspection and queries go through lib/backend.ts
+// (the Rust side in the app, a mock in a plain browser).
 
 import { create } from 'zustand'
-import { sampleConnections } from './mock'
-import { execute } from './mockData'
+import { backend, toBackendError, type ConnConfig, type SavedConnection } from '@/lib/backend'
 import { usePrefs } from './prefs'
 import type { Connection, HistoryEntry, ResultSet, Table } from './types'
 
@@ -58,14 +57,16 @@ type State = {
   cursor: { line: number; col: number } | null
   paletteOpen: boolean
   settings: SettingsPage | null
+  /** New / edit connection dialog: `{}` for a new one, `{ id }` to edit. */
+  connectionDialog: { id?: string } | null
+  /** Asks for the password of a connection that has none stored. */
+  passwordPrompt: { connectionId: string; error?: string } | null
   toasts: Toast[]
 }
 
-const initial = sampleConnections()
-
 export const useStore = create<State>(() => ({
-  connections: Object.fromEntries(initial.map((c) => [c.id, c])),
-  connectionOrder: initial.map((c) => c.id),
+  connections: {},
+  connectionOrder: [],
   active: null,
   workspaces: {},
   mru: [],
@@ -80,6 +81,8 @@ export const useStore = create<State>(() => ({
   cursor: null,
   paletteOpen: false,
   settings: null,
+  connectionDialog: null,
+  passwordPrompt: null,
   toasts: []
 }))
 
@@ -136,6 +139,7 @@ function patchWorkspace(key: string, f: (ws: Workspace) => Workspace) {
 
 export function selectDatabase(connectionId: string, database: string) {
   useStore.setState({ active: { connectionId, database } })
+  void loadDatabase(connectionId, database)
 }
 
 /** Opens a table in a tab (a preview tab unless `pin`), selecting its database. */
@@ -257,7 +261,7 @@ export function cycleDatabase(d: 1 | -1) {
   selectDatabase(next.connectionId, next.database)
 }
 
-// ── Connections (simulated) ───────────────────────────────────────────────
+// ── Connections ───────────────────────────────────────────────────────────
 
 function patchConnection(id: string, patch: Partial<Connection>) {
   useStore.setState((s) => {
@@ -266,39 +270,180 @@ function patchConnection(id: string, patch: Partial<Connection>) {
   })
 }
 
-export function connect(id: string) {
+function fromSaved(c: SavedConnection, prev?: Connection): Connection {
+  return {
+    id: c.id,
+    name: c.name,
+    engine: 'postgres',
+    host: c.host,
+    port: c.port,
+    user: c.user,
+    database: c.database,
+    sslMode: c.sslMode,
+    hasPassword: c.hasPassword,
+    state: prev?.state ?? 'disconnected',
+    latencyMs: prev?.latencyMs ?? null,
+    serverVersion: prev?.serverVersion ?? null,
+    databases: prev?.databases ?? []
+  }
+}
+
+export function configOf(c: Connection): ConnConfig {
+  return {
+    id: c.id,
+    name: c.name,
+    host: c.host,
+    port: c.port ?? 5432,
+    user: c.user ?? '',
+    database: c.database,
+    sslMode: c.sslMode
+  }
+}
+
+/** Loads the saved connections (once, at startup). */
+export async function loadConnections() {
+  try {
+    const list = await backend.listConnections()
+    useStore.setState((s) => ({
+      connections: Object.fromEntries(list.map((c) => [c.id, fromSaved(c, s.connections[c.id])])),
+      connectionOrder: list.map((c) => c.id)
+    }))
+  } catch (e) {
+    reportError('Could not load connections', e)
+  }
+}
+
+/** Saves a new or edited connection; a changed connection reconnects if it was open. */
+export async function saveConnection(
+  config: ConnConfig,
+  password: string | null,
+  savePassword: boolean
+) {
+  await backend.saveConnection(config, password, savePassword)
+  const prev = useStore.getState().connections[config.id]
+  const hasPassword = savePassword && (password != null || !!prev?.hasPassword)
+  useStore.setState((s) => ({
+    connections: {
+      ...s.connections,
+      [config.id]: fromSaved({ ...config, hasPassword }, prev)
+    },
+    connectionOrder: s.connectionOrder.includes(config.id)
+      ? s.connectionOrder
+      : [...s.connectionOrder, config.id]
+  }))
+  if (prev?.state === 'connected')
+    await connect(config.id, savePassword ? undefined : (password ?? undefined))
+}
+
+export async function deleteConnection(id: string) {
+  await backend.deleteConnection(id)
+  useStore.setState((s) => {
+    const { [id]: _, ...connections } = s.connections
+    const workspaces = Object.fromEntries(
+      Object.entries(s.workspaces).filter(([k]) => !k.startsWith(`${id}\u0000`))
+    )
+    return {
+      connections,
+      workspaces,
+      connectionOrder: s.connectionOrder.filter((x) => x !== id),
+      active: s.active?.connectionId === id ? null : s.active
+    }
+  })
+}
+
+/**
+ * Connects (with `password`, else the stored one), lists the databases and
+ * loads the default one. A server asking for a password that isn't stored
+ * opens the password prompt.
+ */
+export async function connect(id: string, password?: string): Promise<boolean> {
+  const conn = useStore.getState().connections[id]
+  if (!conn || conn.state === 'connecting') return false
   patchConnection(id, { state: 'connecting', latencyMs: null })
-  setTimeout(() => {
-    const c = useStore.getState().connections[id]
-    if (c?.state !== 'connecting') return
+  const started = performance.now()
+  try {
+    const info = await backend.connect(id, password)
+    const prev = new Map(conn.databases.map((d) => [d.name, d]))
     patchConnection(id, {
       state: 'connected',
-      latencyMs: c.engine === 'sqlite' ? 0 : 12 + Math.round(Math.random() * 30)
+      latencyMs: Math.round(performance.now() - started),
+      serverVersion: info.serverVersion,
+      // Keep what was loaded before a reconnect; it refreshes on demand.
+      databases: info.databases.map((name) => ({
+        name,
+        schemas: prev.get(name)?.schemas ?? [],
+        loaded: false
+      }))
     })
-  }, 700)
+    useStore.setState({ passwordPrompt: null })
+    // The default database, plus any left expanded in the explorer.
+    const first = info.databases.includes(conn.database) ? conn.database : info.databases[0]
+    const expanded = usePrefs.getState().treeExpanded
+    for (const name of info.databases)
+      if (name === first || expanded[`${id}/${name}`]) void loadDatabase(id, name)
+    return true
+  } catch (e) {
+    const err = toBackendError(e)
+    const auth = err.code === 'password_required' || err.code === '28P01'
+    patchConnection(id, { state: auth ? 'disconnected' : 'failed' })
+    if (auth && (password != null || !conn.hasPassword || err.code === '28P01')) {
+      useStore.setState({
+        passwordPrompt: {
+          connectionId: id,
+          error: password != null || err.code === '28P01' ? err.message : undefined
+        }
+      })
+    } else {
+      pushToast({ kind: 'error', title: `Could not connect to ${conn.name}`, body: err.message })
+    }
+    return false
+  }
 }
 
-export function disconnect(id: string) {
+export async function disconnect(id: string) {
   patchConnection(id, { state: 'disconnected', latencyMs: null })
+  try {
+    await backend.disconnect(id)
+  } catch (e) {
+    reportError('Disconnect failed', e)
+  }
 }
 
-/** Mock only: drop the link and come back, to see the states. */
-export function simulateDrop(id: string) {
-  patchConnection(id, { state: 'failed', latencyMs: null })
-  pushToast({ kind: 'error', title: 'Connection lost', body: 'Reconnecting…' }, 2400)
-  setTimeout(() => connect(id), 1500)
+function patchDatabase(
+  id: string,
+  database: string,
+  patch: Partial<Connection['databases'][number]>
+) {
+  useStore.setState((s) => {
+    const c = s.connections[id]
+    if (!c) return {}
+    const databases = c.databases.map((d) => (d.name === database ? { ...d, ...patch } : d))
+    return { connections: { ...s.connections, [id]: { ...c, databases } } }
+  })
+}
+
+/** Introspects a database's schemas, tables and columns (once, unless `force`). */
+export async function loadDatabase(id: string, database: string, { force = false } = {}) {
+  const c = useStore.getState().connections[id]
+  const db = c?.databases.find((d) => d.name === database)
+  if (c?.state !== 'connected' || !db || db.loading || (db.loaded && !force)) return
+  patchDatabase(id, database, { loading: true })
+  try {
+    const schemas = await backend.introspect(id, database)
+    patchDatabase(id, database, { schemas, loaded: true, loading: false })
+  } catch (e) {
+    patchDatabase(id, database, { loading: false })
+    reportError(`Could not read ${database}`, e)
+  }
 }
 
 export function connectionString(c: Connection, database?: string): string {
-  if (c.engine === 'sqlite') return `sqlite://${c.host}`
-  const auth = c.user ? `${c.user}@` : ''
+  const auth = c.user ? `${encodeURIComponent(c.user)}@` : ''
   const port = c.port ? `:${c.port}` : ''
-  return `${c.engine}://${auth}${c.host}${port}${database ? `/${database}` : ''}`
+  return `postgresql://${auth}${c.host}${port}/${database ?? c.database}`
 }
 
-// ── Queries (simulated) ───────────────────────────────────────────────────
-
-const timers: Record<string, ReturnType<typeof setTimeout>> = {}
+// ── Queries ───────────────────────────────────────────────────────────────
 
 function log(connectionId: string, entry: HistoryEntry) {
   useStore.setState((s) => ({
@@ -309,12 +454,24 @@ function log(connectionId: string, entry: HistoryEntry) {
   }))
 }
 
+function errorText(e: unknown): { error: string; detail?: string } {
+  const err = toBackendError(e)
+  const detail = [err.detail && `Detail: ${err.detail}`, err.hint && `Hint: ${err.hint}`]
+    .filter(Boolean)
+    .join('\n')
+  return {
+    error:
+      err.code && /^[0-9A-Z]{5}$/.test(err.code) ? `[${err.code}] ${err.message}` : err.message,
+    detail: detail || undefined
+  }
+}
+
 /**
- * Runs one statement for an editor tab (simulated against state/mockData.ts):
- * rows land in the tab's result and the bottom panel switches to it; other
- * statements and errors are logged to the Output view.
+ * Runs one statement for an editor tab: rows land in the tab's result and
+ * the bottom panel switches to it; other statements and errors are logged
+ * to the Output view.
  */
-export function runQuery(
+export async function runQuery(
   connectionId: string,
   database: string,
   tabId: string,
@@ -325,48 +482,37 @@ export function runQuery(
   if (!text || useStore.getState().running[tabId]) return
   const conn = useStore.getState().connections[connectionId]
   const at = Date.now()
+  const base = { sql: text, database, at, source: title }
   if (conn?.state !== 'connected') {
     log(connectionId, {
+      ...base,
       id: nextId++,
-      sql: text,
-      database,
-      at,
       ms: 0,
       rows: null,
-      source: title,
       error: `${conn?.name ?? 'Connection'} is not connected`
     })
     useStore.setState({ bottomOpen: true, bottomView: 'output' })
     return
   }
-  const ms = 4 + Math.round(Math.random() * (/^\s*select/i.test(text) ? 600 : 80))
   useStore.setState((s) => ({ running: { ...s.running, [tabId]: true } }))
-  timers[tabId] = setTimeout(() => {
-    delete timers[tabId]
-    useStore.setState((s) => {
-      const { [tabId]: _, ...running } = s.running
-      return { running }
-    })
-    const db = useStore
-      .getState()
-      .connections[connectionId]?.databases.find((d) => d.name === database)
-    const res = execute(db, text, usePrefs.getState().rowLimit)
-    const base = { id: nextId++, sql: text, database, at, ms, source: title }
-    if (res.kind === 'error') {
-      log(connectionId, { ...base, rows: null, error: res.message })
-      useStore.setState({ bottomOpen: true, bottomView: 'output' })
-    } else if (res.kind === 'affected') {
-      log(connectionId, { ...base, rows: null, affected: res.count })
-      useStore.setState({ bottomOpen: true, bottomView: 'output' })
-    } else {
-      log(connectionId, { ...base, rows: res.rows.length })
+  try {
+    const res = await backend.runQuery(connectionId, database, text, usePrefs.getState().rowLimit)
+    if (res.columns.length) {
+      log(connectionId, {
+        ...base,
+        id: nextId++,
+        ms: res.ms,
+        rows: res.rows.length,
+        truncated: res.truncated
+      })
       const result: ResultSet = {
         tabId,
-        title: res.table ?? title,
+        title,
         sql: text,
         columns: res.columns,
         rows: res.rows,
-        ms,
+        truncated: res.truncated,
+        ms: res.ms,
         at
       }
       useStore.setState((s) => ({
@@ -374,19 +520,39 @@ export function runQuery(
         bottomOpen: true,
         bottomView: tabId
       }))
+    } else {
+      log(connectionId, {
+        ...base,
+        id: nextId++,
+        ms: res.ms,
+        rows: null,
+        affected: res.affected ?? 0
+      })
+      useStore.setState({ bottomOpen: true, bottomView: 'output' })
     }
-  }, ms)
+    // DDL may have changed the tree.
+    if (/^\s*(create|drop|alter)\b/i.test(text))
+      void loadDatabase(connectionId, database, { force: true })
+  } catch (e) {
+    log(connectionId, { ...base, id: nextId++, ms: Date.now() - at, rows: null, ...errorText(e) })
+    useStore.setState({ bottomOpen: true, bottomView: 'output' })
+    if (toBackendError(e).code === 'not_connected')
+      patchConnection(connectionId, { state: 'disconnected' })
+  } finally {
+    useStore.setState((s) => {
+      const { [tabId]: _, ...running } = s.running
+      return { running }
+    })
+  }
 }
 
+/** Asks the server to cancel the tab's running statement (it then fails with 57014). */
 export function cancelQuery(tabId: string) {
-  const t = timers[tabId]
-  if (!t) return
-  clearTimeout(t)
-  delete timers[tabId]
-  useStore.setState((s) => {
-    const { [tabId]: _, ...running } = s.running
-    return { running }
-  })
+  const { running, active } = useStore.getState()
+  if (!running[tabId] || !active) return
+  void backend
+    .cancelQuery(active.connectionId, active.database)
+    .catch((e) => reportError('Cancel failed', e))
 }
 
 export function closeResult(tabId: string) {
@@ -410,5 +576,5 @@ export function dismissToast(id: number) {
 }
 
 export function reportError(title: string, err: unknown) {
-  pushToast({ kind: 'error', title, body: err instanceof Error ? err.message : String(err) })
+  pushToast({ kind: 'error', title, body: toBackendError(err).message })
 }

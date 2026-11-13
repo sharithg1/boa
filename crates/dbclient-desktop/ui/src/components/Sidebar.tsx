@@ -18,6 +18,7 @@ import {
   ChevronsDownUp,
   Columns3,
   Copy,
+  Pencil,
   Cylinder,
   Eye,
   FileCode,
@@ -36,6 +37,7 @@ import {
 } from 'lucide-react'
 import {
   connect,
+  loadDatabase,
   connectionString,
   cycleDatabase,
   dbKey,
@@ -51,6 +53,7 @@ import { applyOrder, clampSidebarWidth, DEFAULT_PREFS, setPrefs, usePrefs } from
 import { cn } from '@/lib/utils'
 import { compactCount } from '@/lib/format'
 import { useTitleBarInset } from '@/lib/window-chrome'
+import { qualified } from '@/lib/sql'
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -137,8 +140,17 @@ export function newQueryTarget(): { connectionId: string; database: string } | n
   return null
 }
 
-const newConnection = () =>
-  pushToast({ kind: 'info', title: 'New connection: not built yet' }, 2400)
+const newConnection = () => useStore.setState({ connectionDialog: {} })
+
+/** Re-reads the selected database's schemas (or connects its connection). */
+function refresh() {
+  const { active, connections } = useStore.getState()
+  if (!active) return
+  const c = connections[active.connectionId]
+  if (c?.state === 'connected')
+    void loadDatabase(active.connectionId, active.database, { force: true })
+  else void connect(active.connectionId)
+}
 
 function ExplorerToolbar() {
   const anyConnected = useStore((s) =>
@@ -168,11 +180,7 @@ function ExplorerToolbar() {
           </DropdownMenuItem>
         </DropdownMenuContent>
       </DropdownMenu>
-      <IconButton
-        label="Refresh"
-        side="bottom"
-        onClick={() => pushToast({ kind: 'success', title: 'Schemas synchronized' }, 1600)}
-      >
+      <IconButton label="Refresh selected database" side="bottom" onClick={refresh}>
         <RefreshCw className="size-3.5" />
       </IconButton>
       <IconButton
@@ -357,6 +365,11 @@ function useNodes(): Node[] {
             <Copy />
             Copy connection URL
           </ContextMenuItem>
+          <ContextMenuSeparator />
+          <ContextMenuItem onSelect={() => useStore.setState({ connectionDialog: { id: cid } })}>
+            <Pencil />
+            Edit…
+          </ContextMenuItem>
         </>
       )
     })
@@ -386,15 +399,22 @@ function useNodes(): Node[] {
         depth: 1,
         icon: <Cylinder className={cn(ICON, isActive ? 'text-link' : 'text-quiet')} />,
         label: db.name,
-        meta: `${db.schemas.length}`,
+        meta: db.loading ? 'loading…' : db.loaded ? `${db.schemas.length}` : undefined,
         expandable: true,
         current: isActive && !activeTable,
         onSelect: () => selectDatabase(cid, db.name),
+        onExpand: () => void loadDatabase(cid, db.name),
         menu: (
-          <ContextMenuItem onSelect={() => newQueryTab(cid, db.name)}>
-            <SquareTerminal />
-            New query console
-          </ContextMenuItem>
+          <>
+            <ContextMenuItem onSelect={() => newQueryTab(cid, db.name)}>
+              <SquareTerminal />
+              New query console
+            </ContextMenuItem>
+            <ContextMenuItem onSelect={() => void loadDatabase(cid, db.name, { force: true })}>
+              <RefreshCw />
+              Refresh
+            </ContextMenuItem>
+          </>
         )
       })
       if (!expanded[did]) continue
@@ -430,7 +450,7 @@ function useNodes(): Node[] {
             const tid = `${gid}/${t.name}`
             const isCur =
               isActive && activeTable?.schema === schema.name && activeTable.table === t.name
-            const select = `select * from ${schema.name}.${t.name};`
+            const select = `select * from ${qualified(schema.name, t.name)};`
             out.push({
               id: tid,
               parent: gid,
@@ -564,6 +584,19 @@ function Tree() {
       className="min-h-0 flex-1 overflow-auto py-1.5 outline-none"
       data-sidebar-scroll
     >
+      {nodes.length === 0 && (
+        <div className="flex flex-col items-center gap-2 px-4 py-8 text-center text-sm text-quiet">
+          No data sources
+          <button
+            type="button"
+            onClick={newConnection}
+            className="flex h-7 cursor-pointer items-center gap-1.5 rounded-md border border-input bg-card px-2.5 text-soft hover:bg-hover-strong hover:text-foreground"
+          >
+            <Plus className="size-3.5" />
+            Add PostgreSQL
+          </button>
+        </div>
+      )}
       {nodes.map((n) => (
         <TreeRow
           key={n.id}

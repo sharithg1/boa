@@ -3,15 +3,7 @@
 // the console), and on the right the caret position / row estimate and the
 // active connection + latency (click for the connection popover).
 import { ChevronDown, ChevronRight, PanelBottom, Server } from 'lucide-react'
-import {
-  connect,
-  connectionString,
-  dbKey,
-  disconnect,
-  findTable,
-  simulateDrop,
-  useStore
-} from '@/state/store'
+import { connect, connectionString, dbKey, disconnect, findTable, useStore } from '@/state/store'
 import { ENGINE_LABEL } from '@/lib/format'
 import { cn } from '@/lib/utils'
 import { IconButton } from './IconButton'
@@ -125,14 +117,6 @@ function ConnectionPopover({ connectionId }: { connectionId: string }) {
             {conn.state === 'connecting' ? 'Connecting…' : 'Connect'}
           </button>
         )}
-        <button
-          type="button"
-          className={btn}
-          disabled={conn.state !== 'connected'}
-          onClick={() => simulateDrop(connectionId)}
-        >
-          Simulate connection drop (mock)
-        </button>
       </PopoverContent>
     </Popover>
   )

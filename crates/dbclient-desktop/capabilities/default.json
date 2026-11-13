@@ -1,7 +1,7 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "Everything the UI needs: core IPC, events, window dragging and dialogs.",
+  "description": "Everything the UI needs: core IPC, events, window dragging, dialogs and the database commands.",
   "windows": ["main"],
   "permissions": [
     "core:default",
@@ -9,6 +9,15 @@
     "core:window:allow-start-dragging",
     "dialog:allow-open",
     "dialog:allow-save",
-    "allow-app-info"
+    "allow-app-info",
+    "allow-list-connections",
+    "allow-save-connection",
+    "allow-delete-connection",
+    "allow-test-connection",
+    "allow-connect",
+    "allow-disconnect",
+    "allow-introspect",
+    "allow-run-query",
+    "allow-cancel-query"
   ]
 }

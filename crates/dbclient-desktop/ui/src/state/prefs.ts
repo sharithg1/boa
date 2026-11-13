@@ -55,12 +55,7 @@ export const DEFAULT_PREFS: Prefs = {
   sidebarViews: true,
   recentCount: 5,
   connectionOrder: [],
-  treeExpanded: {
-    'prod-pg': true,
-    'prod-pg/app_production': true,
-    'prod-pg/app_production/public': true,
-    'prod-pg/app_production/public/#table': true
-  },
+  treeExpanded: {},
   bottomHeight: 280,
   sidebarWidth: 260,
   rightPanelWidth: 340,

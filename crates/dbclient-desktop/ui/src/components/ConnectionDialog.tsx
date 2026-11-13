@@ -1,0 +1,402 @@
+// Data source dialog (new / edit a Postgres connection) and the password
+// prompt for connections without a stored password. Settings are saved by
+// the Rust side in the app config dir; passwords go to the OS keychain.
+import { useEffect, useState, type FormEvent, type ReactNode } from 'react'
+import { CircleAlert, CircleCheck, Trash2 } from 'lucide-react'
+import { toBackendError, backend, type ConnConfig, type SslMode } from '@/lib/backend'
+import { configOf, connect, deleteConnection, saveConnection, useStore } from '@/state/store'
+import { setPrefs, usePrefs } from '@/state/prefs'
+import { Button } from '@/components/ui/button'
+import { Checkbox } from '@/components/ui/checkbox'
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle
+} from '@/components/ui/dialog'
+import { Input } from '@/components/ui/input'
+import { Label } from '@/components/ui/label'
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue
+} from '@/components/ui/select'
+import { Spinner } from '@/components/ui/spinner'
+import { cn } from '@/lib/utils'
+
+const SSL_MODES: [SslMode, string][] = [
+  ['disable', 'Disable'],
+  ['prefer', 'Prefer'],
+  ['require', 'Require'],
+  ['verify-full', 'Verify full']
+]
+
+const blank = (): ConnConfig => ({
+  id: crypto.randomUUID(),
+  name: '',
+  host: 'localhost',
+  port: 5432,
+  user: 'postgres',
+  database: 'postgres',
+  sslMode: 'prefer'
+})
+
+/** Fills the fields from `postgres://user:pass@host:port/db?sslmode=…`. */
+export function parseUrl(url: string): { config: Partial<ConnConfig>; password?: string } | null {
+  let u: URL
+  try {
+    u = new URL(url.trim())
+  } catch {
+    return null
+  }
+  if (u.protocol !== 'postgres:' && u.protocol !== 'postgresql:') return null
+  const mode = u.searchParams.get('sslmode')
+  const config: Partial<ConnConfig> = {
+    host: decodeURIComponent(u.hostname) || 'localhost',
+    port: u.port ? Number(u.port) : 5432
+  }
+  if (u.username) config.user = decodeURIComponent(u.username)
+  const db = decodeURIComponent(u.pathname.replace(/^\//, ''))
+  if (db) config.database = db
+  if (mode === 'disable' || mode === 'prefer' || mode === 'require') config.sslMode = mode
+  if (mode === 'verify-full' || mode === 'verify-ca') config.sslMode = 'verify-full'
+  return { config, password: u.password ? decodeURIComponent(u.password) : undefined }
+}
+
+type Test =
+  | { state: 'idle' }
+  | { state: 'running' }
+  | { state: 'ok'; version: string }
+  | { state: 'err'; message: string }
+
+export function ConnectionDialog() {
+  const dialog = useStore((s) => s.connectionDialog)
+  const editing = useStore((s) => (dialog?.id ? s.connections[dialog.id] : undefined))
+  const open = dialog != null
+  const [cfg, setCfg] = useState<ConnConfig>(blank)
+  const [password, setPassword] = useState('')
+  const [passwordTouched, setPasswordTouched] = useState(false)
+  const [savePassword, setSavePassword] = useState(true)
+  const [url, setUrl] = useState('')
+  const [test, setTest] = useState<Test>({ state: 'idle' })
+  const [busy, setBusy] = useState(false)
+  const [confirmDelete, setConfirmDelete] = useState(false)
+
+  // Reset the form each time the dialog opens.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: only on open / target change
+  useEffect(() => {
+    if (!open) return
+    setCfg(editing ? configOf(editing) : blank())
+    setPassword('')
+    setPasswordTouched(false)
+    setSavePassword(editing ? editing.hasPassword : true)
+    setUrl('')
+    setTest({ state: 'idle' })
+    setBusy(false)
+    setConfirmDelete(false)
+  }, [open, dialog?.id])
+
+  const close = () => useStore.setState({ connectionDialog: null })
+  const set = (patch: Partial<ConnConfig>) => {
+    setCfg((c) => ({ ...c, ...patch }))
+    setTest({ state: 'idle' })
+  }
+  const named = (): ConnConfig => ({
+    ...cfg,
+    name: cfg.name.trim() || `${cfg.database}@${cfg.host}`,
+    host: cfg.host.trim(),
+    user: cfg.user.trim(),
+    database: cfg.database.trim() || 'postgres'
+  })
+  /** The password to send: what was typed, or null to use the stored one. */
+  const typedPassword = () => (passwordTouched || !editing?.hasPassword ? password : null)
+
+  const runTest = async () => {
+    setTest({ state: 'running' })
+    try {
+      setTest({ state: 'ok', version: await backend.testConnection(named(), typedPassword()) })
+    } catch (e) {
+      const err = toBackendError(e)
+      setTest({
+        state: 'err',
+        message: err.code === 'password_required' ? 'The server asked for a password' : err.message
+      })
+    }
+  }
+
+  const submit = async (e: FormEvent) => {
+    e.preventDefault()
+    setBusy(true)
+    const config = named()
+    const pw = typedPassword()
+    try {
+      await saveConnection(config, pw, savePassword)
+      close()
+      if (!editing) {
+        // Expand the new connection in the explorer and connect it.
+        setPrefs({ treeExpanded: { ...usePrefs.getState().treeExpanded, [config.id]: true } })
+        void connect(config.id, savePassword ? undefined : (pw ?? undefined))
+      }
+    } catch (err) {
+      setTest({ state: 'err', message: toBackendError(err).message })
+      setBusy(false)
+    }
+  }
+
+  const remove = async () => {
+    if (!editing) return
+    if (!confirmDelete) return setConfirmDelete(true)
+    try {
+      await deleteConnection(editing.id)
+      close()
+    } catch (err) {
+      setTest({ state: 'err', message: toBackendError(err).message })
+    }
+  }
+
+  const valid = cfg.host.trim() && cfg.user.trim() && cfg.port > 0 && cfg.port < 65536
+
+  return (
+    <Dialog open={open} onOpenChange={(o) => !o && close()}>
+      <DialogContent className="sm:max-w-[520px]">
+        <form onSubmit={submit} className="flex flex-col gap-3">
+          <DialogHeader>
+            <DialogTitle>
+              {editing ? `Edit ${editing.name}` : 'New PostgreSQL data source'}
+            </DialogTitle>
+            <DialogDescription>
+              {backend.real
+                ? 'Settings are saved on this machine; the password goes to the system keychain.'
+                : 'Browser preview: no server is contacted, the sample data is used.'}
+            </DialogDescription>
+          </DialogHeader>
+
+          {!editing && (
+            <Field label="URL">
+              <Input
+                value={url}
+                placeholder="postgresql://user:password@host:5432/database"
+                className="font-mono text-xs"
+                onChange={(e) => {
+                  setUrl(e.target.value)
+                  const parsed = parseUrl(e.target.value)
+                  if (!parsed) return
+                  set(parsed.config)
+                  if (parsed.password != null) {
+                    setPassword(parsed.password)
+                    setPasswordTouched(true)
+                  }
+                }}
+              />
+            </Field>
+          )}
+
+          <Field label="Name">
+            <Input
+              autoFocus
+              value={cfg.name}
+              placeholder={`${cfg.database || 'postgres'}@${cfg.host || 'localhost'}`}
+              onChange={(e) => set({ name: e.target.value })}
+            />
+          </Field>
+          <div className="grid grid-cols-[1fr_96px] gap-3">
+            <Field label="Host">
+              <Input value={cfg.host} onChange={(e) => set({ host: e.target.value })} />
+            </Field>
+            <Field label="Port">
+              <Input
+                inputMode="numeric"
+                value={String(cfg.port || '')}
+                onChange={(e) => set({ port: Number(e.target.value.replace(/\D/g, '')) || 0 })}
+              />
+            </Field>
+          </div>
+          <div className="grid grid-cols-2 gap-3">
+            <Field label="User">
+              <Input
+                value={cfg.user}
+                autoComplete="off"
+                onChange={(e) => set({ user: e.target.value })}
+              />
+            </Field>
+            <Field label="Password">
+              <Input
+                type="password"
+                autoComplete="new-password"
+                value={password}
+                placeholder={editing?.hasPassword && !passwordTouched ? '<stored>' : ''}
+                onChange={(e) => {
+                  setPassword(e.target.value)
+                  setPasswordTouched(true)
+                  setTest({ state: 'idle' })
+                }}
+              />
+            </Field>
+          </div>
+          <div className="grid grid-cols-2 gap-3">
+            <Field label="Database">
+              <Input value={cfg.database} onChange={(e) => set({ database: e.target.value })} />
+            </Field>
+            <Field label="SSL">
+              <Select value={cfg.sslMode} onValueChange={(v) => set({ sslMode: v as SslMode })}>
+                <SelectTrigger className="w-full">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {SSL_MODES.map(([v, label]) => (
+                    <SelectItem key={v} value={v}>
+                      {label}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </Field>
+          </div>
+          <Label className="flex w-fit cursor-pointer items-center gap-2 text-sm font-normal text-soft">
+            <Checkbox checked={savePassword} onCheckedChange={(v) => setSavePassword(v === true)} />
+            Save password in keychain
+          </Label>
+
+          <TestResult test={test} />
+
+          <DialogFooter className="flex-row items-center sm:justify-between">
+            <div className="flex items-center gap-2">
+              <Button
+                type="button"
+                variant="outline"
+                size="md"
+                disabled={!valid || test.state === 'running'}
+                onClick={runTest}
+              >
+                {test.state === 'running' && <Spinner className="size-3.5" />}
+                Test connection
+              </Button>
+              {editing && (
+                <Button
+                  type="button"
+                  variant={confirmDelete ? 'destructive' : 'ghost'}
+                  size="md"
+                  onClick={remove}
+                  className={cn(!confirmDelete && 'text-quiet')}
+                >
+                  <Trash2 className="size-3.5" />
+                  {confirmDelete ? 'Click to delete' : 'Delete'}
+                </Button>
+              )}
+            </div>
+            <div className="flex items-center gap-2">
+              <Button type="button" variant="ghost" size="md" onClick={close}>
+                Cancel
+              </Button>
+              <Button type="submit" size="md" disabled={!valid || busy}>
+                {editing ? 'Save' : 'Save and connect'}
+              </Button>
+            </div>
+          </DialogFooter>
+        </form>
+      </DialogContent>
+    </Dialog>
+  )
+}
+
+function Field({ label, children }: { label: string; children: ReactNode }) {
+  return (
+    <label className="flex min-w-0 flex-col gap-1.5">
+      <span className="text-xs text-quiet">{label}</span>
+      {children}
+    </label>
+  )
+}
+
+function TestResult({ test }: { test: Test }) {
+  if (test.state === 'ok')
+    return (
+      <div className="flex items-center gap-2 text-sm text-status-ok">
+        <CircleCheck className="size-4 shrink-0" />
+        Connected · {test.version}
+      </div>
+    )
+  if (test.state === 'err')
+    return (
+      <div className="flex items-start gap-2 text-sm break-words text-status-err-text">
+        <CircleAlert className="mt-0.5 size-4 shrink-0" />
+        <span className="min-w-0 select-text">{test.message}</span>
+      </div>
+    )
+  return null
+}
+
+/** Asks for a password when the server wants one and none is stored. */
+export function PasswordPrompt() {
+  const prompt = useStore((s) => s.passwordPrompt)
+  const conn = useStore((s) => (prompt ? s.connections[prompt.connectionId] : undefined))
+  const [password, setPassword] = useState('')
+  const [save, setSave] = useState(false)
+  const [busy, setBusy] = useState(false)
+  // biome-ignore lint/correctness/useExhaustiveDependencies: reset per prompt
+  useEffect(() => {
+    setPassword('')
+    setBusy(false)
+  }, [prompt?.connectionId, prompt?.error])
+  if (!prompt || !conn) return null
+  const close = () => useStore.setState({ passwordPrompt: null })
+  const submit = async (e: FormEvent) => {
+    e.preventDefault()
+    setBusy(true)
+    if (save) {
+      try {
+        await saveConnection(configOf(conn), password, true)
+      } catch (err) {
+        useStore.setState({ passwordPrompt: { ...prompt, error: toBackendError(err).message } })
+        setBusy(false)
+        return
+      }
+    }
+    await connect(conn.id, password)
+    setBusy(false)
+  }
+  return (
+    <Dialog open onOpenChange={(o) => !o && close()}>
+      <DialogContent className="sm:max-w-[400px]">
+        <form onSubmit={submit} className="flex flex-col gap-3">
+          <DialogHeader>
+            <DialogTitle>Connect to {conn.name}</DialogTitle>
+            <DialogDescription className="font-mono text-xs">
+              {conn.user}@{conn.host}:{conn.port}/{conn.database}
+            </DialogDescription>
+          </DialogHeader>
+          <Input
+            autoFocus
+            type="password"
+            placeholder="Password"
+            value={password}
+            onChange={(e) => setPassword(e.target.value)}
+          />
+          <Label className="flex w-fit cursor-pointer items-center gap-2 text-sm font-normal text-soft">
+            <Checkbox checked={save} onCheckedChange={(v) => setSave(v === true)} />
+            Save password in keychain
+          </Label>
+          {prompt.error && (
+            <div className="flex items-start gap-2 text-sm text-status-err-text">
+              <CircleAlert className="mt-0.5 size-4 shrink-0" />
+              {prompt.error}
+            </div>
+          )}
+          <DialogFooter>
+            <Button type="button" variant="ghost" size="md" onClick={close}>
+              Cancel
+            </Button>
+            <Button type="submit" size="md" disabled={busy}>
+              {busy && <Spinner className="size-3.5" />}
+              Connect
+            </Button>
+          </DialogFooter>
+        </form>
+      </DialogContent>
+    </Dialog>
+  )
+}

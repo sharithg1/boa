@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { tokenize, type Catalog } from './sql'
+import { qualified, quoteIdent, tokenize, type Catalog } from './sql'
 
 const catalog: Catalog = {
   schemas: new Set(['public']),
@@ -15,11 +15,16 @@ const kinds = (sql: string) =>
 describe('tokenize', () => {
   it('covers the input exactly', () => {
     const samples = [
-      "select * from \"Clean\".\"T\" where a = 'it''s' -- tail\n/* open",
+      'select * from "Clean"."T" where a = \'it\'\'s\' -- tail\n/* open',
       "e'x' $$ body $$ $1 :name ::text 1.5e3 t1 [x]",
       ''
     ]
-    for (const s of samples) expect(tokenize(s, catalog).map((t) => t.text).join('')).toBe(s)
+    for (const s of samples)
+      expect(
+        tokenize(s, catalog)
+          .map((t) => t.text)
+          .join('')
+      ).toBe(s)
   })
 
   it('classifies keywords, catalog names, literals and calls', () => {
@@ -51,7 +56,7 @@ describe('tokenize', () => {
   })
 
   it('handles comments, casts, params and types', () => {
-    expect(kinds("-- hi\nx::timestamptz /* c */ $1 :p")).toEqual([
+    expect(kinds('-- hi\nx::timestamptz /* c */ $1 :p')).toEqual([
       'comment:-- hi',
       'plain:x',
       'operator:::',
@@ -60,5 +65,15 @@ describe('tokenize', () => {
       'param:$1',
       'param::p'
     ])
+  })
+})
+
+describe('quoteIdent', () => {
+  it('quotes only names that need it', () => {
+    expect(quoteIdent('users')).toBe('users')
+    expect(quoteIdent('CleanClaims')).toBe('"CleanClaims"')
+    expect(quoteIdent('order')).toBe('"order"')
+    expect(quoteIdent('a"b')).toBe('"a""b"')
+    expect(qualified('public', 'ClaimNarratives')).toBe('public."ClaimNarratives"')
   })
 })

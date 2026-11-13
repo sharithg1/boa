@@ -1,5 +1,5 @@
-// Shapes the UI works with. The Rust side will return these from its
-// connection / introspection commands; today they come from state/mock.ts.
+// Shapes the UI works with. Schemas / tables / columns come from the Rust
+// side's `introspect` command (lib/backend.ts), or state/mock.ts in a browser.
 
 export type Engine = 'postgres' | 'mysql' | 'sqlite'
 
@@ -24,7 +24,15 @@ export type Table = {
 
 export type Schema = { name: string; tables: Table[] }
 
-export type Database = { name: string; schemas: Schema[] }
+export type Database = {
+  name: string
+  schemas: Schema[]
+  /** Introspected (schemas are filled in); databases load on first expand / select. */
+  loaded?: boolean
+  loading?: boolean
+}
+
+export type SslMode = 'disable' | 'prefer' | 'require' | 'verify-full'
 
 export type Connection = {
   id: string
@@ -38,6 +46,11 @@ export type Connection = {
   latencyMs: number | null
   serverVersion: string | null
   databases: Database[]
+  /** Database connected to first. */
+  database: string
+  sslMode: SslMode
+  /** A password is stored in the OS keychain. */
+  hasPassword: boolean
 }
 
 export type HistoryEntry = {
@@ -47,6 +60,10 @@ export type HistoryEntry = {
   at: number
   ms: number
   rows: number | null
+  /** More rows existed than were fetched. */
+  truncated?: boolean
+  /** Server detail / hint lines for errors. */
+  detail?: string
   /** Affected rows, for statements that return none. */
   affected?: number
   /** Editor tab title it ran from (`console_1`). */
@@ -65,6 +82,8 @@ export type ResultSet = {
   sql: string
   columns: ResultColumn[]
   rows: (string | null)[][]
+  /** More rows existed than the row limit. */
+  truncated?: boolean
   ms: number
   at: number
 }

@@ -1,6 +1,10 @@
-// In-browser sample data for the shell: a few connections with databases,
-// schemas and tables, until the Rust side exposes real drivers.
+// In-browser sample data, served by the mock backend (lib/backend.ts) when
+// the UI runs in a plain browser: a few connections with databases, schemas
+// and tables.
 import type { Column, Connection, Database, Table } from './types'
+
+/** A sample server: a connection without the saved-settings fields. */
+export type SampleConnection = Omit<Connection, 'database' | 'sslMode' | 'hasPassword'>
 
 const col = (
   name: string,
@@ -141,7 +145,7 @@ const SHOP_DB: Database = {
   ]
 }
 
-export function sampleConnections(): Connection[] {
+export function sampleConnections(): SampleConnection[] {
   return [
     {
       id: 'prod-pg',

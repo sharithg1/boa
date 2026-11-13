@@ -4,7 +4,7 @@
 // gutter; its results go to the bottom Database Output panel. A table tab is
 // the table's data editor: a toolbar (refresh, filter, DDL, console) above
 // the data grid. Execution is simulated (state/mockData.ts).
-import { useMemo, useRef, useState, type ReactNode } from 'react'
+import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import {
   Check,
   ChevronDown,
@@ -21,7 +21,6 @@ import {
   dbKey,
   findTable,
   newQueryTab,
-  pushToast,
   runQuery,
   setQuerySql,
   useStore,
@@ -29,9 +28,10 @@ import {
   type TableTab
 } from '@/state/store'
 import { setPrefs, usePrefs } from '@/state/prefs'
-import { sampleRows, statementAt, tableColumns } from '@/state/mockData'
+import { statementAt } from '@/state/mockData'
+import { backend, toBackendError, type QueryResult } from '@/lib/backend'
 import type { Table } from '@/state/types'
-import type { Catalog } from '@/lib/sql'
+import { qualified, quoteIdent, type Catalog } from '@/lib/sql'
 import { cn } from '@/lib/utils'
 import {
   DropdownMenu,
@@ -44,6 +44,7 @@ import {
 import { Kbd } from './chrome'
 import { DataGrid } from './DataGrid'
 import { IconButton } from './IconButton'
+import { Spinner } from '@/components/ui/spinner'
 import { SqlHighlight } from './SqlHighlight'
 
 export function Workspace() {
@@ -319,14 +320,19 @@ function QueryView({
 function ddl(schema: string, t: Table): string {
   const cols = t.columns.map(
     (c) =>
-      `    ${c.name} ${c.type}${c.nullable ? '' : ' not null'}${c.default ? ` default ${c.default}` : ''}`
+      `    ${quoteIdent(c.name)} ${c.type}${c.nullable ? '' : ' not null'}${c.default ? ` default ${c.default}` : ''}`
   )
-  const pk = t.columns.filter((c) => c.pk).map((c) => c.name)
+  const pk = t.columns.filter((c) => c.pk).map((c) => quoteIdent(c.name))
   if (pk.length) cols.push(`    primary key (${pk.join(', ')})`)
   return t.kind === 'view'
-    ? `create view ${schema}.${t.name} as\n    select …;\n`
-    : `create table ${schema}.${t.name}\n(\n${cols.join(',\n')}\n);\n`
+    ? `create view ${qualified(schema, t.name)} as\n    select …;\n`
+    : `create table ${qualified(schema, t.name)}\n(\n${cols.join(',\n')}\n);\n`
 }
+
+type Load =
+  | { state: 'loading' }
+  | { state: 'ok'; result: QueryResult }
+  | { state: 'err'; message: string }
 
 function TableView({
   connectionId,
@@ -338,36 +344,52 @@ function TableView({
   tab: TableTab
 }) {
   useStore((s) => s.connections[connectionId])
+  const connected = useStore((s) => s.connections[connectionId]?.state === 'connected')
   const rowLimit = usePrefs((s) => s.rowLimit)
   const [nonce, setNonce] = useState(0)
   const [filter, setFilter] = useState('')
+  const [load, setLoad] = useState<Load>({ state: 'loading' })
   const table = findTable(connectionId, database, tab.schema, tab.table)
-  const columns = useMemo(() => (table ? tableColumns(table) : []), [table])
+  const select = `select * from ${qualified(tab.schema, tab.table)}`
+
   // biome-ignore lint/correctness/useExhaustiveDependencies: nonce forces a reload
-  const rows = useMemo(() => (table ? sampleRows(table, rowLimit) : []), [table, rowLimit, nonce])
+  useEffect(() => {
+    if (!connected) return
+    let stale = false
+    setLoad({ state: 'loading' })
+    backend
+      .runQuery(connectionId, database, select, rowLimit)
+      .then((result) => !stale && setLoad({ state: 'ok', result }))
+      .catch((e) => !stale && setLoad({ state: 'err', message: toBackendError(e).message }))
+    return () => {
+      stale = true
+    }
+  }, [connectionId, database, select, rowLimit, connected, nonce])
+
+  const rows = load.state === 'ok' ? load.result.rows : []
   const shown = useMemo(() => {
     const q = filter.trim().toLowerCase()
     return q ? rows.filter((r) => r.some((v) => v?.toLowerCase().includes(q))) : rows
   }, [rows, filter])
-  if (!table) {
-    return <div className="grid h-full place-items-center text-sm text-quiet">Table not found</div>
-  }
-  const select = `select * from ${tab.schema}.${tab.table};`
+
   return (
     <div className="flex h-full flex-col overflow-hidden">
       <Toolbar>
         <IconButton
-          label="Reload page"
+          label="Reload"
           side="bottom"
-          onClick={() => {
-            setNonce((n) => n + 1)
-            pushToast({ kind: 'info', title: `Reloaded ${tab.table}` }, 1600)
-          }}
+          disabled={!connected || load.state === 'loading'}
+          onClick={() => setNonce((n) => n + 1)}
         >
           <RefreshCw className="size-3.5" />
         </IconButton>
         <span className="px-1.5 text-xs text-dim">
-          {Math.min(rowLimit, table.rows).toLocaleString()} of ~{table.rows.toLocaleString()}
+          {load.state === 'ok'
+            ? `${load.result.rows.length.toLocaleString()}${load.result.truncated ? '+' : ''} rows · ${load.result.ms} ms`
+            : load.state === 'loading' && connected
+              ? 'Loading…'
+              : ''}
+          {table && table.rows > 0 ? ` · ~${table.rows.toLocaleString()} total` : ''}
         </span>
         <Sep />
         <label className="flex h-6 min-w-0 max-w-[320px] flex-1 items-center gap-1.5 rounded-md border border-input bg-field px-2">
@@ -375,32 +397,46 @@ function TableView({
           <input
             value={filter}
             onChange={(e) => setFilter(e.target.value)}
-            placeholder="Filter rows"
+            placeholder="Filter loaded rows"
             className="min-w-0 flex-1 bg-transparent font-mono text-xs text-body outline-none placeholder:text-dim"
           />
         </label>
         <span className="flex-1" />
-        <button
-          type="button"
-          className={TOOL_BTN}
-          onClick={() => newQueryTab(connectionId, database, ddl(tab.schema, table))}
-        >
-          DDL
-        </button>
+        {table && (
+          <button
+            type="button"
+            className={TOOL_BTN}
+            onClick={() => newQueryTab(connectionId, database, ddl(tab.schema, table))}
+          >
+            DDL
+          </button>
+        )}
         <IconButton
           label="Open query console"
           side="bottom"
-          onClick={() => newQueryTab(connectionId, database, select)}
+          onClick={() => newQueryTab(connectionId, database, `${select};`)}
         >
           <FileCode className="size-3.5" />
         </IconButton>
       </Toolbar>
-      <DataGrid
-        key={`${nonce}`}
-        columns={columns}
-        rows={shown}
-        pk={table.columns.filter((c) => c.pk).map((c) => c.name)}
-      />
+      {!connected ? (
+        <div className="grid flex-1 place-items-center text-sm text-quiet">Not connected</div>
+      ) : load.state === 'err' ? (
+        <div className="grid flex-1 place-items-center px-6 text-center text-sm text-status-err-text select-text">
+          {load.message}
+        </div>
+      ) : load.state === 'loading' ? (
+        <div className="grid flex-1 place-items-center text-sm text-quiet">
+          <Spinner className="size-4" />
+        </div>
+      ) : (
+        <DataGrid
+          key={`${nonce}`}
+          columns={load.result.columns}
+          rows={shown}
+          pk={table?.columns.filter((c) => c.pk).map((c) => c.name)}
+        />
+      )}
     </div>
   )
 }

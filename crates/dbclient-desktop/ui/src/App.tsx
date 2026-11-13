@@ -1,6 +1,7 @@
 import { useEffect } from 'react'
 import { BottomPanel } from './components/BottomPanel'
 import { CommandPalette } from './components/CommandPalette'
+import { ConnectionDialog, PasswordPrompt } from './components/ConnectionDialog'
 import { RightPanel } from './components/RightPanel'
 import { SettingsView } from './components/SettingsView'
 import { Sidebar, newQueryTarget } from './components/Sidebar'
@@ -13,8 +14,8 @@ import {
   closeTab,
   cycleDatabase,
   dbKey,
+  loadConnections,
   newQueryTab,
-  pushToast,
   useStore
 } from './state/store'
 
@@ -24,6 +25,9 @@ export function App() {
   const bottomOpen = useStore((s) => s.bottomOpen)
 
   useShortcuts()
+  useEffect(() => {
+    void loadConnections()
+  }, [])
 
   return (
     // DataGrip-style tool windows: Database Explorer on the left, the editor
@@ -42,6 +46,8 @@ export function App() {
       <StatusBar />
       <SettingsView />
       <CommandPalette />
+      <ConnectionDialog />
+      <PasswordPrompt />
       <Toasts />
     </div>
   )
@@ -79,7 +85,7 @@ function useShortcuts() {
       }
       if (mod && e.code === 'KeyO' && !e.shiftKey && !overlay) {
         e.preventDefault()
-        pushToast({ kind: 'info', title: 'New connection: not built yet' }, 2400)
+        useStore.setState({ connectionDialog: {} })
         return
       }
       if (mod && e.key === ',') {

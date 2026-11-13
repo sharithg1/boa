@@ -77,6 +77,7 @@ export function BottomPanel() {
           <span className="shrink-0 truncate px-1.5 text-xs text-dim">
             {sourceTab?.kind === 'query' ? sourceTab.title : ''}
             {conn ? ` [${conn.name}]` : ''} · {current.ms} ms
+            {current.truncated ? ' · row limit reached' : ''}
           </span>
         )}
         {view === 'output' && active && (
@@ -169,7 +170,9 @@ const time = (ms: number) =>
 function outcome(h: HistoryEntry): string {
   if (h.error) return `ERROR: ${h.error}`
   if (h.rows != null)
-    return `${h.rows} row${h.rows === 1 ? '' : 's'} retrieved starting from 1 in ${h.ms} ms`
+    return `${h.rows} row${h.rows === 1 ? '' : 's'} retrieved starting from 1 in ${h.ms} ms${
+      h.truncated ? ' (row limit reached, more available)' : ''
+    }`
   if (h.affected) return `${h.affected} row${h.affected === 1 ? '' : 's'} affected in ${h.ms} ms`
   return `completed in ${h.ms} ms`
 }
@@ -198,6 +201,12 @@ function OutputLog({ connectionId }: { connectionId?: string }) {
             <span className="opacity-0">[{time(h.at)}] </span>
             {outcome(h)}
           </div>
+          {h.detail && (
+            <div className="text-status-err-text/80">
+              <span className="opacity-0">[{time(h.at)}] </span>
+              {h.detail}
+            </div>
+          )}
         </div>
       ))}
     </div>

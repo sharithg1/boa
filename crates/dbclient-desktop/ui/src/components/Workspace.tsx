@@ -31,6 +31,7 @@ import {
 import { setPrefs, usePrefs } from '@/state/prefs'
 import { sampleRows, statementAt, tableColumns } from '@/state/mockData'
 import type { Table } from '@/state/types'
+import type { Catalog } from '@/lib/sql'
 import { cn } from '@/lib/utils'
 import {
   DropdownMenu,
@@ -43,6 +44,7 @@ import {
 import { Kbd } from './chrome'
 import { DataGrid } from './DataGrid'
 import { IconButton } from './IconButton'
+import { SqlHighlight } from './SqlHighlight'
 
 export function Workspace() {
   const active = useStore((s) => s.active)
@@ -103,6 +105,9 @@ function Toolbar({ children }: { children: ReactNode }) {
   )
 }
 
+/** Shared by the textarea and its highlight layer so glyphs line up exactly. */
+const EDITOR_TEXT = 'py-2.5 pr-3 pl-3 font-mono text-sm whitespace-pre'
+
 const Sep = () => <span aria-hidden className="mx-1.5 h-4 w-px shrink-0 bg-border" />
 
 const TOOL_BTN =
@@ -127,6 +132,18 @@ function QueryView({
   const [manualTx, setManualTx] = useState(false)
   const area = useRef<HTMLTextAreaElement>(null)
   const gutter = useRef<HTMLDivElement>(null)
+  const layer = useRef<HTMLPreElement>(null)
+  // Names to colour as schema / table / column references.
+  const catalog = useMemo<Catalog | undefined>(() => {
+    if (!db) return undefined
+    const lower = (xs: string[]) => new Set(xs.map((x) => x.toLowerCase()))
+    const tables = db.schemas.flatMap((s) => s.tables)
+    return {
+      schemas: lower(db.schemas.map((s) => s.name)),
+      tables: lower(tables.map((t) => t.name)),
+      columns: lower(tables.flatMap((t) => t.columns.map((c) => c.name)))
+    }
+  }, [db])
   const lines = tab.sql.split('\n').length
 
   const exec = (sql: string) => runQuery(connectionId, database, tab.id, tab.title, sql)
@@ -246,38 +263,54 @@ function QueryView({
             <div key={i}>{i + 1}</div>
           ))}
         </div>
-        <textarea
-          ref={area}
-          autoFocus
-          value={tab.sql}
-          spellCheck={false}
-          aria-label="SQL"
-          placeholder={`-- ${database}.${schema}\nSELECT …`}
-          onChange={(e) => {
-            setQuerySql(key, tab.id, e.target.value)
-            trackCaret()
-          }}
-          onSelect={trackCaret}
-          onFocus={trackCaret}
-          onBlur={() => useStore.setState({ cursor: null })}
-          onScroll={(e) => {
-            if (gutter.current) gutter.current.scrollTop = e.currentTarget.scrollTop
-          }}
-          onKeyDown={(e) => {
-            if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
-              e.preventDefault()
-              run()
-            } else if (e.key === 'Tab' && !e.shiftKey) {
-              // Indent rather than leave the editor.
-              e.preventDefault()
-              const el = e.currentTarget
-              const { selectionStart: a, selectionEnd: b } = el
-              setQuerySql(key, tab.id, `${tab.sql.slice(0, a)}    ${tab.sql.slice(b)}`)
-              requestAnimationFrame(() => el.setSelectionRange(a + 4, a + 4))
-            }
-          }}
-          className="h-full min-w-0 flex-1 resize-none bg-transparent py-2.5 pr-3 pl-3 font-mono text-sm whitespace-pre text-body outline-none placeholder:text-dim"
-        />
+        <div className="relative min-w-0 flex-1 overflow-hidden">
+          <SqlHighlight ref={layer} sql={tab.sql} catalog={catalog} className={EDITOR_TEXT} />
+          <textarea
+            ref={area}
+            autoFocus
+            value={tab.sql}
+            spellCheck={false}
+            wrap="off"
+            autoCapitalize="off"
+            autoCorrect="off"
+            aria-label="SQL"
+            placeholder={`-- ${database}.${schema}\nSELECT …`}
+            onChange={(e) => {
+              setQuerySql(key, tab.id, e.target.value)
+              trackCaret()
+            }}
+            onSelect={trackCaret}
+            onFocus={trackCaret}
+            onBlur={() => useStore.setState({ cursor: null })}
+            onScroll={(e) => {
+              const { scrollTop, scrollLeft } = e.currentTarget
+              if (gutter.current) gutter.current.scrollTop = scrollTop
+              if (layer.current) {
+                layer.current.scrollTop = scrollTop
+                layer.current.scrollLeft = scrollLeft
+              }
+            }}
+            onKeyDown={(e) => {
+              if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
+                e.preventDefault()
+                run()
+              } else if (e.key === 'Tab' && !e.shiftKey) {
+                // Indent rather than leave the editor.
+                e.preventDefault()
+                const el = e.currentTarget
+                const { selectionStart: a, selectionEnd: b } = el
+                setQuerySql(key, tab.id, `${tab.sql.slice(0, a)}    ${tab.sql.slice(b)}`)
+                requestAnimationFrame(() => el.setSelectionRange(a + 4, a + 4))
+              }
+            }}
+            // Text is drawn by the highlight layer underneath; the textarea
+            // only shows the caret and the selection.
+            className={cn(
+              EDITOR_TEXT,
+              'relative h-full w-full resize-none bg-transparent text-transparent caret-body outline-none placeholder:text-dim selection:bg-status-run/35'
+            )}
+          />
+        </div>
       </div>
     </div>
   )

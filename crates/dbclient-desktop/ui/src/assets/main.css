@@ -104,6 +104,17 @@
   --color-prompt-path: var(--prompt-path);
   --color-link: var(--link);
   --color-scrim: var(--scrim);
+  /* SQL editor highlighting (lib/sql.ts token kinds) */
+  --color-sql-keyword: var(--sql-keyword);
+  --color-sql-type: var(--sql-type);
+  --color-sql-function: var(--sql-function);
+  --color-sql-string: var(--sql-string);
+  --color-sql-number: var(--sql-number);
+  --color-sql-comment: var(--sql-comment);
+  --color-sql-param: var(--sql-param);
+  --color-sql-table: var(--sql-table);
+  --color-sql-column: var(--sql-column);
+  --color-sql-operator: var(--sql-operator);
   --shadow-floating: 0 12px 40px rgb(0 0 0 / 0.45);
   --shadow-menu: 0 8px 28px rgb(0 0 0 / 0.45), 0 0 0 1px rgb(255 255 255 / 0.06);
   --shadow-dialog: 0 24px 70px rgb(0 0 0 / 0.6);
@@ -195,6 +206,16 @@
   --prompt-path: oklch(0.5 0.12 250);
   --link: #2563eb;
   --scrim: rgb(0 0 0 / 0.3);
+  --sql-keyword: oklch(0.52 0.14 55);
+  --sql-type: oklch(0.52 0.15 15);
+  --sql-function: var(--link);
+  --sql-string: oklch(0.5 0.12 135);
+  --sql-number: oklch(0.52 0.12 200);
+  --sql-comment: var(--faint);
+  --sql-param: var(--prompt-path);
+  --sql-table: var(--pr-merged);
+  --sql-column: oklch(0.5 0.12 300);
+  --sql-operator: var(--quiet);
 }
 
 /* ── Dark (default) ────────────────────────────────────── */
@@ -272,6 +293,17 @@
   --link: #7bafe9;
   --scrim: rgb(0 0 0 / 0.5);
   --scrim-palette: rgb(0 0 0 / 0.45);
+  /* SQL editor: drawn from the palette above. */
+  --sql-keyword: var(--status-wait);
+  --sql-type: var(--status-err-text);
+  --sql-function: var(--link);
+  --sql-string: var(--prompt-user);
+  --sql-number: var(--status-ok);
+  --sql-comment: var(--dim);
+  --sql-param: var(--prompt-path);
+  --sql-table: var(--pr-merged);
+  --sql-column: #c4b5fd;
+  --sql-operator: var(--quiet);
 }
 
 @layer base {

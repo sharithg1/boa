@@ -11,7 +11,10 @@ and breadcrumbs in the status bar.
 
 Status: **PostgreSQL only**. Add a data source (⌘O, or + in the explorer;
 a `postgresql://` URL fills the form), connect, browse schemas / tables /
-columns, open table data and run statements (⌘↵) from a console. Settings
+columns, open table data and run statements (⌘↵) from a console. Like
+DataGrip, only picked databases and schemas are shown and introspected:
+click the "N of M" badge on a connection or database (defaults: the
+connection's database, the `public` schema). Settings
 are saved in the app config dir (`connections.json`), passwords in the OS
 keychain. In a plain browser (`dev:web`) a mock backend serves the sample
 data in `ui/src/state/mock.ts`.

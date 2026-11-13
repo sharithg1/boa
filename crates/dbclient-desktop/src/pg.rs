@@ -173,6 +173,7 @@ left join pg_index i on i.indrelid = c.oid and i.indisprimary
 where c.relkind in ('r', 'v', 'm', 'p', 'f')
   and n.nspname <> 'information_schema' and n.nspname not like 'pg\_%'
   and not c.relispartition
+  and n.nspname = any($1)
 order by n.nspname, c.relname, a.attnum";
 
 /// First keyword of a statement, lower-cased, skipping comments and parentheses.
@@ -262,19 +263,41 @@ impl Pg {
         Ok(s)
     }
 
-    pub async fn introspect(&self, id: &str, database: &str) -> CmdResult<Vec<Schema>> {
+    /// Names of the database's schemas (cheap: for the schema picker).
+    pub async fn list_schemas(&self, id: &str, database: &str) -> CmdResult<Vec<String>> {
+        let s = self.session(id, database).await?;
+        Ok(s.client
+            .query(SCHEMAS, &[])
+            .await?
+            .iter()
+            .map(|r| r.get(0))
+            .collect())
+    }
+
+    /// Tables, views and columns of the given schemas only (those that exist).
+    pub async fn introspect(
+        &self,
+        id: &str,
+        database: &str,
+        only: &[String],
+    ) -> CmdResult<Vec<Schema>> {
         let s = self.session(id, database).await?;
         let mut schemas: Vec<Schema> = s
             .client
             .query(SCHEMAS, &[])
             .await?
             .iter()
-            .map(|r| Schema {
-                name: r.get(0),
+            .map(|r| r.get::<_, String>(0))
+            .filter(|name| only.contains(name))
+            .map(|name| Schema {
+                name,
                 tables: Vec::new(),
             })
             .collect();
-        for r in s.client.query(RELATIONS, &[]).await? {
+        if schemas.is_empty() {
+            return Ok(schemas);
+        }
+        for r in s.client.query(RELATIONS, &[&only]).await? {
             let schema: String = r.get(0);
             let table: String = r.get(1);
             let Some(sc) = schemas.iter_mut().find(|x| x.name == schema) else {
@@ -571,7 +594,17 @@ mod tests {
             Some("26")
         );
 
-        let schemas = pg.introspect("test", &db).await.unwrap();
+        let schemas = pg
+            .introspect("test", &db, &["dbclient_test".to_owned()])
+            .await
+            .unwrap();
+        assert_eq!(schemas.len(), 1);
+        assert!(
+            pg.list_schemas("test", &db)
+                .await
+                .unwrap()
+                .contains(&"dbclient_test".to_owned())
+        );
         let t = &schemas
             .iter()
             .find(|s| s.name == "dbclient_test")

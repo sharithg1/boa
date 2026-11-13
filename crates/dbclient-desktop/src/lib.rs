@@ -111,8 +111,19 @@ async fn disconnect(pg: State<'_, Pg>, id: String) -> CmdResult<()> {
 }
 
 #[tauri::command]
-async fn introspect(pg: State<'_, Pg>, id: String, database: String) -> CmdResult<Vec<Schema>> {
-    pg.introspect(&id, &database).await
+async fn list_schemas(pg: State<'_, Pg>, id: String, database: String) -> CmdResult<Vec<String>> {
+    pg.list_schemas(&id, &database).await
+}
+
+/// Tables and columns of `schemas` (the ones picked in the explorer).
+#[tauri::command]
+async fn introspect(
+    pg: State<'_, Pg>,
+    id: String,
+    database: String,
+    schemas: Vec<String>,
+) -> CmdResult<Vec<Schema>> {
+    pg.introspect(&id, &database, &schemas).await
 }
 
 #[tauri::command]
@@ -158,6 +169,7 @@ pub fn run() {
             test_connection,
             connect,
             disconnect,
+            list_schemas,
             introspect,
             run_query,
             cancel_query

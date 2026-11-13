@@ -16,6 +16,7 @@
     "allow-test-connection",
     "allow-connect",
     "allow-disconnect",
+    "allow-list-schemas",
     "allow-introspect",
     "allow-run-query",
     "allow-cancel-query"

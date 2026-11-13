@@ -5,7 +5,7 @@
 
 import { create } from 'zustand'
 import { backend, toBackendError, type ConnConfig, type SavedConnection } from '@/lib/backend'
-import { usePrefs } from './prefs'
+import { setPrefs, usePrefs } from './prefs'
 import type { Connection, HistoryEntry, ResultSet, Table } from './types'
 
 export type QueryTab = { id: string; kind: 'query'; title: string; sql: string }
@@ -121,12 +121,62 @@ export function findTable(
     ?.tables.find((t) => t.name === table)
 }
 
-/** Every database of every connection, in sidebar order. */
+/** Every shown database of every connection, in sidebar order. */
 export function allDatabases(): Active[] {
   const s = useStore.getState()
-  return s.connectionOrder.flatMap((id) =>
-    (s.connections[id]?.databases ?? []).map((d) => ({ connectionId: id, database: d.name }))
-  )
+  const scopes = usePrefs.getState().scopes
+  return s.connectionOrder.flatMap((id) => {
+    const c = s.connections[id]
+    return c ? shownDatabases(scopes, c).map((d) => ({ connectionId: id, database: d })) : []
+  })
+}
+
+// ── Scope (what the explorer shows and introspects) ───────────────────────
+
+export type Scope = string[] | '*'
+type Scopes = Record<string, Scope>
+
+export const schemaScopeKey = (connectionId: string, database: string) =>
+  `${connectionId}/${database}`
+
+/** The connection's picked databases, in server order (default: its own database). */
+export function shownDatabases(scopes: Scopes, c: Connection): string[] {
+  const names = c.databases.map((d) => d.name)
+  const sel = scopes[c.id]
+  if (sel === '*') return names
+  const want = new Set(sel ?? [c.database])
+  return names.filter((n) => want.has(n))
+}
+
+/** The database's picked schemas, in server order (default: `public`, else the first). */
+export function databaseSchemas(
+  scopes: Scopes,
+  connectionId: string,
+  database: string,
+  names: string[]
+): string[] {
+  const sel = scopes[schemaScopeKey(connectionId, database)]
+  if (sel === '*') return names
+  if (sel) {
+    const want = new Set(sel)
+    return names.filter((n) => want.has(n))
+  }
+  return names.includes('public') ? ['public'] : names.slice(0, 1)
+}
+
+/** Saves a picker choice and loads what became visible. */
+export function setScope(key: string, scope: Scope) {
+  setPrefs({ scopes: { ...usePrefs.getState().scopes, [key]: scope } })
+  const slash = key.indexOf('/')
+  if (slash >= 0) {
+    void loadDatabase(key.slice(0, slash), key.slice(slash + 1))
+    return
+  }
+  const c = useStore.getState().connections[key]
+  if (!c) return
+  const expanded = usePrefs.getState().treeExpanded
+  for (const d of shownDatabases(usePrefs.getState().scopes, c))
+    if (expanded[schemaScopeKey(key, d)]) void loadDatabase(key, d)
 }
 
 // ── Selection and tabs ────────────────────────────────────────────────────
@@ -376,11 +426,12 @@ export async function connect(id: string, password?: string): Promise<boolean> {
       }))
     })
     useStore.setState({ passwordPrompt: null })
-    // The default database, plus any left expanded in the explorer.
-    const first = info.databases.includes(conn.database) ? conn.database : info.databases[0]
+    // The first shown database, plus any shown ones left expanded.
+    const shown = shownDatabases(usePrefs.getState().scopes, useStore.getState().connections[id]!)
     const expanded = usePrefs.getState().treeExpanded
-    for (const name of info.databases)
-      if (name === first || expanded[`${id}/${name}`]) void loadDatabase(id, name)
+    shown.forEach((name, i) => {
+      if (i === 0 || expanded[schemaScopeKey(id, name)]) void loadDatabase(id, name)
+    })
     return true
   } catch (e) {
     const err = toBackendError(e)
@@ -422,19 +473,42 @@ function patchDatabase(
   })
 }
 
-/** Introspects a database's schemas, tables and columns (once, unless `force`). */
+/**
+ * Lists the database's schema names, then introspects the picked schemas
+ * that are not loaded yet and drops the unpicked ones (`force`: re-reads
+ * everything). Re-runs if the pick changed meanwhile.
+ */
 export async function loadDatabase(id: string, database: string, { force = false } = {}) {
+  const dbNow = () =>
+    useStore.getState().connections[id]?.databases.find((d) => d.name === database)
   const c = useStore.getState().connections[id]
-  const db = c?.databases.find((d) => d.name === database)
-  if (c?.state !== 'connected' || !db || db.loading || (db.loaded && !force)) return
+  const db = dbNow()
+  if (c?.state !== 'connected' || !db || db.loading) return
   patchDatabase(id, database, { loading: true })
+  let want: string[] = []
   try {
-    const schemas = await backend.introspect(id, database)
+    let names = db.schemaNames
+    if (!names || force) {
+      names = await backend.listSchemas(id, database)
+      patchDatabase(id, database, { schemaNames: names })
+    }
+    want = databaseSchemas(usePrefs.getState().scopes, id, database, names)
+    const kept = force ? [] : (dbNow()?.schemas ?? []).filter((s) => want.includes(s.name))
+    const missing = want.filter((n) => !kept.some((s) => s.name === n))
+    const fetched = missing.length ? await backend.introspect(id, database, missing) : []
+    const byName = new Map([...kept, ...fetched].map((s) => [s.name, s]))
+    const schemas = names.flatMap((n) => byName.get(n) ?? [])
     patchDatabase(id, database, { schemas, loaded: true, loading: false })
   } catch (e) {
     patchDatabase(id, database, { loading: false })
     reportError(`Could not read ${database}`, e)
+    return
   }
+  // The pick may have changed while we were loading.
+  const after = dbNow()
+  if (!after?.schemaNames) return
+  const now = databaseSchemas(usePrefs.getState().scopes, id, database, after.schemaNames)
+  if (now.join('\u0000') !== want.join('\u0000')) void loadDatabase(id, database)
 }
 
 export function connectionString(c: Connection, database?: string): string {

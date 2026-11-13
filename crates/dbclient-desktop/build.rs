@@ -11,6 +11,7 @@ const COMMANDS: &[&str] = &[
     "test_connection",
     "connect",
     "disconnect",
+    "list_schemas",
     "introspect",
     "run_query",
     "cancel_query",

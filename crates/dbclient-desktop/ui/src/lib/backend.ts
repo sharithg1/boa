@@ -64,7 +64,10 @@ export type Backend = {
   testConnection(config: ConnConfig, password: string | null): Promise<string>
   connect(id: string, password?: string): Promise<ConnectInfo>
   disconnect(id: string): Promise<void>
-  introspect(id: string, database: string): Promise<Schema[]>
+  /** Every schema name in the database (cheap; for the schema picker). */
+  listSchemas(id: string, database: string): Promise<string[]>
+  /** Tables, views and columns of the given schemas only. */
+  introspect(id: string, database: string, schemas: string[]): Promise<Schema[]>
   runQuery(id: string, database: string, sql: string, limit: number): Promise<QueryResult>
   cancelQuery(id: string, database: string): Promise<void>
 }
@@ -78,7 +81,8 @@ const tauriBackend: Backend = {
   testConnection: (config, password) => invoke('test_connection', { config, password }),
   connect: (id, password) => invoke('connect', { id, password: password ?? null }),
   disconnect: (id) => invoke('disconnect', { id }),
-  introspect: (id, database) => invoke('introspect', { id, database }),
+  listSchemas: (id, database) => invoke('list_schemas', { id, database }),
+  introspect: (id, database, schemas) => invoke('introspect', { id, database, schemas }),
   runQuery: (id, database, sql, limit) => invoke('run_query', { id, database, sql, limit }),
   cancelQuery: (id, database) => invoke('cancel_query', { id, database })
 }
@@ -135,9 +139,13 @@ function mockBackend(): Backend {
       }
     },
     disconnect: async () => {},
-    introspect: async (id, database) => {
+    listSchemas: async (id, database) => {
+      await sleep(80)
+      return dbOf(id, database)?.schemas.map((s) => s.name) ?? []
+    },
+    introspect: async (id, database, schemas) => {
       await sleep(150)
-      return dbOf(id, database)?.schemas ?? []
+      return dbOf(id, database)?.schemas.filter((s) => schemas.includes(s.name)) ?? []
     },
     runQuery: async (id, database, sql, limit) => {
       const key = `${id}\u0000${database}`

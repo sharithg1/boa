@@ -28,6 +28,13 @@ export type Prefs = {
   connectionOrder: string[]
   /** Expanded Database Explorer nodes, by tree path (see Sidebar `nodeId`). */
   treeExpanded: Record<string, true>
+  /**
+   * What the explorer shows and introspects, DataGrip's "N of M": by
+   * connection id the databases, by `connectionId/database` the schemas.
+   * `'*'` is all (including ones created later); unset is the default (the
+   * connection's database; the `public` schema).
+   */
+  scopes: Record<string, string[] | '*'>
   /** Bottom panel (Database Output) height in px, as last dragged. */
   bottomHeight: number
   /** Sidebar width in px, as last dragged. */
@@ -42,6 +49,7 @@ export type Prefs = {
 const KEPT_ON_RESET = [
   'connectionOrder',
   'treeExpanded',
+  'scopes',
   'bottomHeight',
   'sidebarWidth',
   'rightPanelWidth',
@@ -56,6 +64,7 @@ export const DEFAULT_PREFS: Prefs = {
   recentCount: 5,
   connectionOrder: [],
   treeExpanded: {},
+  scopes: {},
   bottomHeight: 280,
   sidebarWidth: 260,
   rightPanelWidth: 340,

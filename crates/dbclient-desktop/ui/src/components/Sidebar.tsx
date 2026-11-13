@@ -37,7 +37,11 @@ import {
 } from 'lucide-react'
 import {
   connect,
+  databaseSchemas,
   loadDatabase,
+  schemaScopeKey,
+  setScope,
+  shownDatabases,
   connectionString,
   cycleDatabase,
   dbKey,
@@ -70,6 +74,7 @@ import {
 } from '@/components/ui/context-menu'
 import { IconButton } from './IconButton'
 import { PanelResizeHandle } from './PanelResizeHandle'
+import { ScopePicker } from './ScopePicker'
 
 export function Sidebar() {
   const savedWidth = usePrefs((s) => s.sidebarWidth)
@@ -322,6 +327,7 @@ function useNodes(): Node[] {
   const expanded = usePrefs((s) => s.treeExpanded)
   const showViews = usePrefs((s) => s.sidebarViews)
   const showCounts = usePrefs((s) => s.sidebarRowCounts)
+  const scopes = usePrefs((s) => s.scopes)
 
   const out: Node[] = []
   const ids = applyOrder(
@@ -343,7 +349,18 @@ function useNodes(): Node[] {
           <ConnStateDot conn={conn} />
         </span>
       ),
-      meta: connected ? `${conn.databases.length}` : connMeta(conn),
+      meta: connected ? (
+        <ScopePicker
+          kind="databases"
+          items={conn.databases.map((d) => d.name)}
+          selected={shownDatabases(scopes, conn)}
+          isAll={scopes[cid] === '*'}
+          defaultItem={conn.database}
+          onApply={(scope) => setScope(cid, scope)}
+        />
+      ) : (
+        connMeta(conn)
+      ),
       expandable: true,
       onExpand: () => {
         if (conn.state === 'disconnected' || conn.state === 'failed') connect(cid)
@@ -390,7 +407,18 @@ function useNodes(): Node[] {
       continue
     }
     if (!open) continue
+    const shown = new Set(shownDatabases(scopes, conn))
+    if (shown.size === 0)
+      out.push({
+        id: `${cid}/#none`,
+        parent: cid,
+        depth: 1,
+        icon: null,
+        label: <span className="text-dim">No databases picked: use the “of” badge</span>,
+        expandable: false
+      })
     for (const db of conn.databases) {
+      if (!shown.has(db.name)) continue
       const did = `${cid}/${db.name}`
       const isActive = active?.connectionId === cid && active.database === db.name
       out.push({
@@ -399,7 +427,21 @@ function useNodes(): Node[] {
         depth: 1,
         icon: <Cylinder className={cn(ICON, isActive ? 'text-link' : 'text-quiet')} />,
         label: db.name,
-        meta: db.loading ? 'loading…' : db.loaded ? `${db.schemas.length}` : undefined,
+        meta: db.schemaNames ? (
+          <span className="flex items-center gap-1.5">
+            <ScopePicker
+              kind="schemas"
+              items={db.schemaNames}
+              selected={databaseSchemas(scopes, cid, db.name, db.schemaNames)}
+              isAll={scopes[schemaScopeKey(cid, db.name)] === '*'}
+              defaultItem={db.schemaNames.includes('public') ? 'public' : db.schemaNames[0]}
+              onApply={(scope) => setScope(schemaScopeKey(cid, db.name), scope)}
+            />
+            {db.loading && 'loading…'}
+          </span>
+        ) : db.loading ? (
+          'loading…'
+        ) : undefined,
         expandable: true,
         current: isActive && !activeTable,
         onSelect: () => selectDatabase(cid, db.name),
@@ -418,7 +460,12 @@ function useNodes(): Node[] {
         )
       })
       if (!expanded[did]) continue
+      // Drop unpicked schemas at once; newly picked ones appear as they load.
+      const picked = new Set(
+        db.schemaNames ? databaseSchemas(scopes, cid, db.name, db.schemaNames) : []
+      )
       for (const schema of db.schemas) {
+        if (!picked.has(schema.name)) continue
         const sid = `${did}/${schema.name}`
         const groups = (['table', 'view'] as const)
           .map((kind) => ({ kind, items: schema.tables.filter((t) => t.kind === kind) }))

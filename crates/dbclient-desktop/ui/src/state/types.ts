@@ -27,6 +27,8 @@ export type Schema = { name: string; tables: Table[] }
 export type Database = {
   name: string
   schemas: Schema[]
+  /** Every schema name (listed cheaply); `schemas` holds only the picked ones, introspected. */
+  schemaNames?: string[]
   /** Introspected (schemas are filled in); databases load on first expand / select. */
   loaded?: boolean
   loading?: boolean

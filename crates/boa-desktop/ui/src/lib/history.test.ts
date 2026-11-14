@@ -176,7 +176,7 @@ describe('localHistoryStore', () => {
   it('survives missing or corrupt storage', () => {
     expect(localHistoryStore(undefined).list('c')).toEqual([])
     const kv = memory()
-    kv.setItem('dbclient.history.c', '{nope')
+    kv.setItem('boa.history.c', '{nope')
     expect(localHistoryStore(kv).list('c')).toEqual([])
   })
 })

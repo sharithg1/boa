@@ -74,7 +74,7 @@ export const DEFAULT_PREFS: Prefs = {
   rightTab: 'structure'
 }
 
-const KEY = 'dbclient.prefs.v2'
+const KEY = 'boa.prefs.v2'
 
 const RIGHT_TABS: RightTab[] = ['structure', 'info', 'history']
 

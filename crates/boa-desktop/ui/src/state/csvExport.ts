@@ -45,7 +45,7 @@ export type ExportJob = {
   bytes: number
 }
 
-const KEY = 'dbclient.csvExport'
+const KEY = 'boa.csvExport'
 
 function loadOptions(): CsvOptions {
   try {

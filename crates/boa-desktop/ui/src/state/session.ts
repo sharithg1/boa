@@ -26,7 +26,7 @@ export type Session = {
 
 type SessionState = Required<Session>
 
-const KEY = 'dbclient.session.v1'
+const KEY = 'boa.session.v1'
 const SAVE_DELAY_MS = 250
 
 const isObject = (v: unknown): v is Record<string, unknown> =>

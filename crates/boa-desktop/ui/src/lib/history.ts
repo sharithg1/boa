@@ -155,7 +155,7 @@ type KV = Pick<Storage, 'getItem' | 'setItem' | 'removeItem'>
 
 /** The history files' operations over localStorage (oldest first, capped). */
 export function localHistoryStore(kv: KV | undefined, cap = HISTORY_CAP) {
-  const key = (id: string) => `dbclient.history.${id}`
+  const key = (id: string) => `boa.history.${id}`
   const read = (id: string): HistoryRecord[] => {
     try {
       const raw = kv?.getItem(key(id))

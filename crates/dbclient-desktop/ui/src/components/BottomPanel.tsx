@@ -5,12 +5,13 @@
 // resets); toggled with ⌥J or the status bar button.
 import { useState } from 'react'
 import { Minus, SquareTerminal, Table2, Trash2, X } from 'lucide-react'
-import { closeResult, dbKey, useStore } from '@/state/store'
+import { closeResult, dbKey, pageResult, useStore } from '@/state/store'
 import { clampBottomHeight, DEFAULT_PREFS, setPrefs, usePrefs } from '@/state/prefs'
 import type { HistoryEntry } from '@/state/types'
 import { cn } from '@/lib/utils'
 import { DataGrid } from './DataGrid'
 import { IconButton } from './IconButton'
+import { Pager } from './Pager'
 import { PanelResizeHandle } from './PanelResizeHandle'
 
 export function BottomPanel() {
@@ -28,6 +29,7 @@ export function BottomPanel() {
   const current = view !== 'output' ? results[view] : undefined
   const sourceTab = tabs?.find((t) => t.id === current?.tabId)
   const conn = useStore((s) => (active ? s.connections[active.connectionId] : undefined))
+  const paging = useStore((s) => (current ? !!s.running[current.tabId] : false))
 
   return (
     <section
@@ -77,8 +79,18 @@ export function BottomPanel() {
           <span className="shrink-0 truncate px-1.5 text-xs text-dim">
             {sourceTab?.kind === 'query' ? sourceTab.title : ''}
             {conn ? ` [${conn.name}]` : ''} · {current.ms} ms
-            {current.truncated ? ' · row limit reached' : ''}
+            {current.truncated && !current.pageable ? ' · row limit reached' : ''}
           </span>
+        )}
+        {current?.pageable && (
+          <Pager
+            offset={current.offset}
+            count={current.rows.length}
+            pageSize={current.pageSize}
+            more={!!current.truncated}
+            busy={paging}
+            onPage={(o) => void pageResult(current.tabId, o)}
+          />
         )}
         {view === 'output' && active && (
           <IconButton
@@ -101,9 +113,10 @@ export function BottomPanel() {
       </div>
       {current ? (
         <DataGrid
-          key={`${current.tabId}-${current.at}`}
+          key={`${current.tabId}-${current.at}-${current.offset}`}
           columns={current.columns}
           rows={current.rows}
+          firstRow={current.offset + 1}
         />
       ) : (
         <OutputLog connectionId={active?.connectionId} />
@@ -170,8 +183,8 @@ const time = (ms: number) =>
 function outcome(h: HistoryEntry): string {
   if (h.error) return `ERROR: ${h.error}`
   if (h.rows != null)
-    return `${h.rows} row${h.rows === 1 ? '' : 's'} retrieved starting from 1 in ${h.ms} ms${
-      h.truncated ? ' (row limit reached, more available)' : ''
+    return `${h.rows} row${h.rows === 1 ? '' : 's'} retrieved starting from ${(h.offset ?? 0) + 1} in ${h.ms} ms${
+      h.truncated ? ' (more available)' : ''
     }`
   if (h.affected) return `${h.affected} row${h.affected === 1 ? '' : 's'} affected in ${h.ms} ms`
   return `completed in ${h.ms} ms`

@@ -30,6 +30,7 @@ import {
 import { setPrefs, usePrefs } from '@/state/prefs'
 import { rangePath, statementsAt, type Range, type TextMetrics } from '@/lib/statements'
 import { backend, toBackendError, type QueryResult } from '@/lib/backend'
+import { Pager } from './Pager'
 import type { Table } from '@/state/types'
 import { qualified, quoteIdent, type Catalog } from '@/lib/sql'
 import { cn } from '@/lib/utils'
@@ -111,6 +112,9 @@ function Toolbar({ children }: { children: ReactNode }) {
 
 /** Shared by the textarea and its highlight layer so glyphs line up exactly. */
 const EDITOR_TEXT = 'py-2.5 pr-3 pl-3 font-mono text-sm whitespace-pre'
+/** Editor top padding (`py-2.5`) and line height (`text-sm`), for the caret-line band. */
+const EDITOR_PAD = 10
+const EDITOR_LINE = 20
 
 const Sep = () => <span aria-hidden className="mx-1.5 h-4 w-px shrink-0 bg-border" />
 
@@ -151,6 +155,9 @@ function QueryView({
   // editor loses focus. `caret`: the caret while the editor has focus.
   const [chooser, setChooser] = useState<{ items: Range[]; sel: number; at: number } | null>(null)
   const [caret, setCaret] = useState<number | null>(null)
+  // Caret line (0-based) for the current-line band; null with a selection.
+  const [caretLine, setCaretLine] = useState<number | null>(0)
+  const [scrollTop, setScrollTop] = useState(0)
   /** Set while a completion is inserted, so that edit does not reopen the list. */
   const accepting = useRef(false)
   // Names to colour as schema / table / column references.
@@ -245,7 +252,9 @@ function QueryView({
     const el = area.current
     if (!el) return
     setCaret(el.selectionStart === el.selectionEnd ? el.selectionStart : null)
-    const before = tab.sql.slice(0, el.selectionStart).split('\n')
+    // The DOM value: during onChange `tab.sql` is still the previous text.
+    const before = el.value.slice(0, el.selectionStart).split('\n')
+    setCaretLine(el.selectionStart === el.selectionEnd ? before.length - 1 : null)
     useStore.setState({
       cursor: { line: before.length, col: before[before.length - 1]!.length + 1 }
     })
@@ -341,14 +350,24 @@ function QueryView({
           </DropdownMenuContent>
         </DropdownMenu>
       </Toolbar>
-      <div className="flex min-h-0 flex-1 bg-[#1b1c1c]">
+      <div className="relative flex min-h-0 flex-1 bg-editor">
+        {caretLine != null && (
+          // DataGrip's caret-row band, across the gutter and the text.
+          <div
+            aria-hidden
+            className="pointer-events-none absolute inset-x-0 h-5 bg-editor-line"
+            style={{ top: EDITOR_PAD + caretLine * EDITOR_LINE - scrollTop }}
+          />
+        )}
         <div
           ref={gutter}
           aria-hidden
-          className="no-scrollbar w-12 shrink-0 overflow-hidden border-r border-border py-2.5 pr-2.5 text-right font-mono text-sm text-dim select-none"
+          className="no-scrollbar relative w-14 shrink-0 overflow-hidden border-r border-editor-divider py-2.5 pr-5 text-right font-mono text-sm text-editor-gutter select-none"
         >
           {Array.from({ length: lines }, (_, i) => (
-            <div key={i}>{i + 1}</div>
+            <div key={i} className={cn(i === caretLine && 'text-editor-gutter-active')}>
+              {i + 1}
+            </div>
           ))}
         </div>
         <div ref={box} className="relative min-w-0 flex-1 overflow-hidden">
@@ -368,7 +387,6 @@ function QueryView({
             autoCapitalize="off"
             autoCorrect="off"
             aria-label="SQL"
-            placeholder={`-- ${database}.${schema}\nSELECT …`}
             onChange={(e) => {
               const { value, selectionStart: pos } = e.target
               setQuerySql(key, tab.id, value)
@@ -400,6 +418,7 @@ function QueryView({
               setComp((c) => c && { ...c })
               setChooser((c) => c && { ...c })
               const { scrollTop, scrollLeft } = e.currentTarget
+              setScrollTop(scrollTop)
               if (gutter.current) gutter.current.scrollTop = scrollTop
               if (layer.current) {
                 layer.current.scrollTop = scrollTop
@@ -466,7 +485,7 @@ function QueryView({
             // only shows the caret and the selection.
             className={cn(
               EDITOR_TEXT,
-              'relative h-full w-full resize-none bg-transparent text-transparent caret-body outline-none placeholder:text-dim selection:bg-status-run/35'
+              'relative h-full w-full resize-none bg-transparent text-transparent caret-body outline-none selection:bg-status-run/35'
             )}
           />
           {chooser && chooser.items.length > 1 && area.current && box.current && (
@@ -526,24 +545,31 @@ function TableView({
   const connected = useStore((s) => s.connections[connectionId]?.state === 'connected')
   const rowLimit = usePrefs((s) => s.rowLimit)
   const [nonce, setNonce] = useState(0)
+  const [page, setPage] = useState({ offset: 0, rowLimit, table: '' })
+  const [paging, setPaging] = useState(false)
   const [filter, setFilter] = useState('')
   const [load, setLoad] = useState<Load>({ state: 'loading' })
   const table = findTable(connectionId, database, tab.schema, tab.table)
   const select = `select * from ${qualified(tab.schema, tab.table)}`
+  // A new page size (or table) starts over from the first page.
+  const offset = page.rowLimit === rowLimit && page.table === select ? page.offset : 0
+  const setOffset = (o: number) => setPage({ offset: o, rowLimit, table: select })
 
   // biome-ignore lint/correctness/useExhaustiveDependencies: nonce forces a reload
   useEffect(() => {
     if (!connected) return
     let stale = false
-    setLoad({ state: 'loading' })
+    setLoad((l) => (l.state === 'ok' ? l : { state: 'loading' }))
+    setPaging(true)
     backend
-      .runQuery(connectionId, database, select, rowLimit)
+      .runQuery(connectionId, database, select, rowLimit, offset)
       .then((result) => !stale && setLoad({ state: 'ok', result }))
       .catch((e) => !stale && setLoad({ state: 'err', message: toBackendError(e).message }))
+      .finally(() => !stale && setPaging(false))
     return () => {
       stale = true
     }
-  }, [connectionId, database, select, rowLimit, connected, nonce])
+  }, [connectionId, database, select, rowLimit, offset, connected, nonce])
 
   const rows = load.state === 'ok' ? load.result.rows : []
   const shown = useMemo(() => {
@@ -557,14 +583,24 @@ function TableView({
         <IconButton
           label="Reload"
           side="bottom"
-          disabled={!connected || load.state === 'loading'}
+          disabled={!connected || paging}
           onClick={() => setNonce((n) => n + 1)}
         >
           <RefreshCw className="size-3.5" />
         </IconButton>
+        {load.state === 'ok' && (
+          <Pager
+            offset={offset}
+            count={load.result.rows.length}
+            pageSize={rowLimit}
+            more={load.result.truncated}
+            busy={paging}
+            onPage={setOffset}
+          />
+        )}
         <span className="px-1.5 text-xs text-dim">
           {load.state === 'ok'
-            ? `${load.result.rows.length.toLocaleString()}${load.result.truncated ? '+' : ''} rows · ${load.result.ms} ms`
+            ? `${offset === 0 && !load.result.truncated ? `${load.result.rows.length.toLocaleString()} rows · ` : ''}${load.result.ms} ms`
             : load.state === 'loading' && connected
               ? 'Loading…'
               : ''}
@@ -610,9 +646,10 @@ function TableView({
         </div>
       ) : (
         <DataGrid
-          key={`${nonce}`}
+          key={`${nonce}-${offset}`}
           columns={load.result.columns}
           rows={shown}
+          firstRow={filter.trim() ? 1 : offset + 1}
           pk={table?.columns.filter((c) => c.pk).map((c) => c.name)}
         />
       )}

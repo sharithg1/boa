@@ -32,8 +32,10 @@ export type QueryResult = {
   rows: (string | null)[][]
   /** Rows affected / returned, as the server reported it. */
   affected: number | null
-  /** More rows existed than the limit. */
+  /** More rows existed after this page. */
   truncated: boolean
+  /** Read-only statement: other pages can be fetched by re-running it with an offset. */
+  pageable: boolean
   ms: number
 }
 
@@ -68,7 +70,14 @@ export type Backend = {
   listSchemas(id: string, database: string): Promise<string[]>
   /** Tables, views and columns of the given schemas only. */
   introspect(id: string, database: string, schemas: string[]): Promise<Schema[]>
-  runQuery(id: string, database: string, sql: string, limit: number): Promise<QueryResult>
+  /** Runs `sql`, returning `limit` rows after the first `offset` (pageable statements only). */
+  runQuery(
+    id: string,
+    database: string,
+    sql: string,
+    limit: number,
+    offset?: number
+  ): Promise<QueryResult>
   cancelQuery(id: string, database: string): Promise<void>
 }
 
@@ -83,7 +92,8 @@ const tauriBackend: Backend = {
   disconnect: (id) => invoke('disconnect', { id }),
   listSchemas: (id, database) => invoke('list_schemas', { id, database }),
   introspect: (id, database, schemas) => invoke('introspect', { id, database, schemas }),
-  runQuery: (id, database, sql, limit) => invoke('run_query', { id, database, sql, limit }),
+  runQuery: (id, database, sql, limit, offset = 0) =>
+    invoke('run_query', { id, database, sql, limit, offset }),
   cancelQuery: (id, database) => invoke('cancel_query', { id, database })
 }
 
@@ -147,22 +157,25 @@ function mockBackend(): Backend {
       await sleep(150)
       return dbOf(id, database)?.schemas.filter((s) => schemas.includes(s.name)) ?? []
     },
-    runQuery: async (id, database, sql, limit) => {
+    runQuery: async (id, database, sql, limit, offset = 0) => {
       const key = `${id}\u0000${database}`
       cancelled.delete(key)
       const ms = 20 + Math.round(Math.random() * 400)
       await sleep(ms)
       if (cancelled.has(key))
         throw { message: 'canceling statement due to user request', code: '57014' }
-      const res = execute(dbOf(id, database), sql, limit)
+      const res = execute(dbOf(id, database), sql, limit, offset)
       if (res.kind === 'error') throw { message: res.message, code: '42P01' }
-      if (res.kind === 'affected')
-        return { columns: [], rows: [], affected: res.count, truncated: false, ms }
+      if (res.kind === 'affected') {
+        if (offset) throw { message: "This statement can't be paged" }
+        return { columns: [], rows: [], affected: res.count, truncated: false, pageable: false, ms }
+      }
       return {
         columns: res.columns,
         rows: res.rows,
         affected: res.rows.length,
-        truncated: false,
+        truncated: res.truncated ?? false,
+        pageable: true,
         ms
       }
     },

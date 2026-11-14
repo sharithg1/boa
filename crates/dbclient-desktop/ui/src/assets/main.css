@@ -104,6 +104,12 @@
   --color-prompt-path: var(--prompt-path);
   --color-link: var(--link);
   --color-scrim: var(--scrim);
+  /* SQL editor surface (DataGrip's dark editor). */
+  --color-editor: var(--editor);
+  --color-editor-line: var(--editor-line);
+  --color-editor-gutter: var(--editor-gutter);
+  --color-editor-gutter-active: var(--editor-gutter-active);
+  --color-editor-divider: var(--editor-divider);
   /* SQL editor highlighting (lib/sql.ts token kinds) */
   --color-sql-keyword: var(--sql-keyword);
   --color-sql-type: var(--sql-type);
@@ -293,6 +299,12 @@
   --link: #7bafe9;
   --scrim: rgb(0 0 0 / 0.5);
   --scrim-palette: rgb(0 0 0 / 0.45);
+  /* SQL editor surface: background, caret-line band, line numbers. */
+  --editor: #1e1f22;
+  --editor-line: #26282e;
+  --editor-gutter: #4b5059;
+  --editor-gutter-active: #a1a3ab;
+  --editor-divider: #313438;
   /* SQL editor: drawn from the palette above. */
   --sql-keyword: var(--status-wait);
   --sql-type: var(--status-err-text);

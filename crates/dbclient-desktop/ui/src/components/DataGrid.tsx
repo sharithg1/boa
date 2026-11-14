@@ -24,10 +24,13 @@ function initialWidth(c: ResultColumn, rows: (string | null)[][], i: number): nu
 export function DataGrid({
   columns,
   rows,
-  pk
+  pk,
+  firstRow = 1
 }: {
   columns: ResultColumn[]
   rows: (string | null)[][]
+  /** Number shown on the first row (page offset + 1). */
+  firstRow?: number
   /** Primary-key column names, marked with a key in the header. */
   pk?: string[]
 }) {
@@ -59,7 +62,7 @@ export function DataGrid({
     const v = rows[view[r]!]?.[c]
     const col = columns[c]
     if (v == null || !col || kinds[c] !== 'json') return false
-    setViewing({ column: col.name, type: col.type, row: r + 1, value: v })
+    setViewing({ column: col.name, type: col.type, row: firstRow + r, value: v })
     return true
   }
 
@@ -180,7 +183,7 @@ export function DataGrid({
                       rowSel ? 'text-soft' : 'text-dim'
                     )}
                   >
-                    {r + 1}
+                    {firstRow + r}
                   </td>
                   {row.map((v, c) => {
                     const active = rowSel && sel?.c === c

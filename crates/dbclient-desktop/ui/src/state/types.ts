@@ -64,6 +64,8 @@ export type HistoryEntry = {
   rows: number | null
   /** More rows existed than were fetched. */
   truncated?: boolean
+  /** Rows skipped before the fetched page. */
+  offset?: number
   /** Server detail / hint lines for errors. */
   detail?: string
   /** Affected rows, for statements that return none. */
@@ -82,10 +84,18 @@ export type ResultSet = {
   /** Label of the result tab: `db.schema.table` or the console name. */
   title: string
   sql: string
+  connectionId: string
+  database: string
   columns: ResultColumn[]
   rows: (string | null)[][]
-  /** More rows existed than the row limit. */
+  /** More rows exist after this page. */
   truncated?: boolean
+  /** Read-only statement: other pages re-run it with LIMIT/OFFSET semantics. */
+  pageable: boolean
+  /** Rows skipped before this page. */
+  offset: number
+  /** Page size it was first run with (the row limit then). */
+  pageSize: number
   ms: number
   at: number
 }

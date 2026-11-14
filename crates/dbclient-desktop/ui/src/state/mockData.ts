@@ -101,13 +101,25 @@ export function statementAt(sql: string, pos: number): string {
 }
 
 export type Execution =
-  | { kind: 'rows'; columns: ResultColumn[]; rows: (string | null)[][]; table?: string }
+  | {
+      kind: 'rows'
+      columns: ResultColumn[]
+      rows: (string | null)[][]
+      /** More rows exist after this page. */
+      truncated?: boolean
+      table?: string
+    }
   | { kind: 'affected'; count: number }
   | { kind: 'error'; message: string }
 
 const unquote = (s: string) => s.replace(/^["`]|["`]$/g, '')
 
-export function execute(db: Database | undefined, sql: string, rowLimit: number): Execution {
+export function execute(
+  db: Database | undefined,
+  sql: string,
+  rowLimit: number,
+  offset = 0
+): Execution {
   const text = sql.trim().replace(/;$/, '')
   if (!/^(select|with|table|show|explain|values)\b/i.test(text)) {
     if (
@@ -150,9 +162,10 @@ export function execute(db: Database | undefined, sql: string, rowLimit: number)
   }
   if (!table) return { kind: 'error', message: `relation "${parts.join('.')}" does not exist` }
   const limit = /\blimit\s+(\d+)/i.exec(text)
-  const n = Math.min(limit ? Number(limit[1]) : rowLimit, rowLimit)
+  const total = Math.min(limit ? Number(limit[1]) : table.rows, table.rows)
+  const end = Math.min(total, offset + rowLimit)
   let columns = tableColumns(table)
-  let rows = sampleRows(table, n)
+  let rows = sampleRows(table, end).slice(offset)
   const list = /^select\s+(.*?)\s+from\b/is.exec(text)?.[1]?.trim()
   if (list && list !== '*') {
     const wanted = list.split(',').map((s) => unquote(s.trim().split('.').pop()!))
@@ -162,5 +175,11 @@ export function execute(db: Database | undefined, sql: string, rowLimit: number)
     columns = idx.map((i) => columns[i]!)
     rows = rows.map((row) => idx.map((i) => row[i]!))
   }
-  return { kind: 'rows', columns, rows, table: `${db?.name}.${schema}.${table.name}` }
+  return {
+    kind: 'rows',
+    columns,
+    rows,
+    truncated: end < total,
+    table: `${db?.name}.${schema}.${table.name}`
+  }
 }

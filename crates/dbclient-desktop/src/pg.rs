@@ -5,8 +5,9 @@
 //! to a database). Statements run over the simple-query protocol, so every
 //! value comes back as the server's own text rendering (what psql shows),
 //! with column types taken from a `prepare` of the same statement.
-//! Row-returning statements go through a cursor so only the first `limit`
-//! rows ever leave the server.
+//! Row-returning statements go through a cursor so only one page (`limit`
+//! rows after skipping `offset`) ever leaves the server. Pages are stateless:
+//! each one re-runs the statement, like DataGrip's LIMIT/OFFSET paging.
 
 use crate::connections::{ConnConfig, SslMode};
 use crate::error::{CmdError, CmdResult};
@@ -142,8 +143,12 @@ pub struct QueryResult {
     pub rows: Vec<Vec<Option<String>>>,
     /// Rows affected (or returned) as the server reported it.
     pub affected: Option<u64>,
-    /// More rows existed than `limit`.
+    /// More rows existed after this page.
     pub truncated: bool,
+    /// Read-only cursor statement: other pages can be fetched by re-running
+    /// it with an offset. False for DML (`INSERT … RETURNING`), which must
+    /// never be re-run.
+    pub pageable: bool,
     pub ms: u64,
 }
 
@@ -331,13 +336,15 @@ impl Pg {
         Ok(schemas)
     }
 
-    /// Runs one statement; row-returning ones stop after `limit` rows.
+    /// Runs one statement; row-returning ones return `limit` rows starting
+    /// after the first `offset`. Only pageable statements accept an offset.
     pub async fn query(
         &self,
         id: &str,
         database: &str,
         sql: &str,
         limit: usize,
+        offset: usize,
     ) -> CmdResult<QueryResult> {
         let s = self.session(id, database).await?;
         let started = Instant::now();
@@ -362,12 +369,17 @@ impl Pg {
             && typed.as_ref().is_some_and(|c| !c.is_empty());
 
         let mut result = if cursorable {
-            match self.fetch_with_cursor(&s, sql, limit).await {
+            match self.fetch_with_cursor(&s, sql, limit, offset).await {
                 Ok(r) => r,
-                // `WITH … INSERT` can't be a cursor (0A000): run it plainly.
-                Err(e) if e.code.as_deref() == Some("0A000") => run_simple(&s, sql, limit).await?,
+                // `WITH … INSERT` can't be a cursor (0A000): run it plainly,
+                // but never re-run it for another page.
+                Err(e) if e.code.as_deref() == Some("0A000") && offset == 0 => {
+                    run_simple(&s, sql, limit).await?
+                }
                 Err(e) => return Err(e),
             }
+        } else if offset > 0 {
+            return Err(CmdError::msg("This statement can't be paged"));
         } else {
             let r = run_simple(&s, sql, limit).await?;
             match kw.as_str() {
@@ -391,6 +403,7 @@ impl Pg {
         s: &Session,
         sql: &str,
         limit: usize,
+        offset: usize,
     ) -> CmdResult<QueryResult> {
         let own_tx = !s.in_tx.load(Ordering::Relaxed);
         if own_tx {
@@ -400,13 +413,20 @@ impl Pg {
             s.client
                 .batch_execute(&format!("declare __dbclient no scroll cursor for {sql}"))
                 .await?;
-            let r = run_simple(
+            // Same work on the server as OFFSET, without rewriting the SQL.
+            if offset > 0 {
+                s.client
+                    .batch_execute(&format!("move forward {offset} in __dbclient"))
+                    .await?;
+            }
+            let mut r = run_simple(
                 s,
                 &format!("fetch forward {} from __dbclient", limit + 1),
                 limit,
             )
             .await?;
             s.client.batch_execute("close __dbclient").await?;
+            r.pageable = true;
             Ok::<_, CmdError>(r)
         };
         match run.await {
@@ -480,6 +500,7 @@ async fn run_simple(s: &Session, sql: &str, limit: usize) -> CmdResult<QueryResu
         rows,
         affected,
         truncated,
+        pageable: false,
         ms: 0,
     })
 }
@@ -528,7 +549,7 @@ mod tests {
         assert!(info.server_version.starts_with("PostgreSQL"));
         assert!(info.databases.contains(&db));
 
-        let q = |sql: &'static str, limit: usize| pg.query("test", &db, sql, limit);
+        let q = |sql: &'static str, limit: usize| pg.query("test", &db, sql, limit, 0);
         q("drop schema if exists dbclient_test cascade", 10)
             .await
             .unwrap();
@@ -554,6 +575,25 @@ mod tests {
         assert_eq!(r.columns[0].name, "id");
         assert_eq!(r.columns[0].ty, "int4");
         assert_eq!(r.rows[0], vec![Some("1".into()), Some("n1".into()), None]);
+        assert!(r.pageable);
+
+        // Later pages re-run the statement with an offset.
+        let page = |offset| {
+            pg.query(
+                "test",
+                &db,
+                r#"select id from dbclient_test."Mixed" order by id"#,
+                10,
+                offset,
+            )
+        };
+        let p2 = page(10).await.unwrap();
+        assert_eq!(p2.rows.first().unwrap()[0].as_deref(), Some("11"));
+        assert!(p2.truncated);
+        let p3 = page(20).await.unwrap();
+        assert_eq!(p3.rows.len(), 5);
+        assert!(!p3.truncated);
+        assert!(page(30).await.unwrap().rows.is_empty());
 
         // INSERT … RETURNING: not a cursor, still returns rows.
         let r = q(
@@ -563,6 +603,19 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(r.rows, vec![vec![Some("100".into())]]);
+        assert!(!r.pageable);
+        // …and is never re-run for another page.
+        assert!(
+            pg.query(
+                "test",
+                &db,
+                r#"insert into dbclient_test."Mixed" (id) values (101) returning id"#,
+                10,
+                10
+            )
+            .await
+            .is_err()
+        );
 
         // Server errors carry SQLSTATE and position; the session stays usable.
         let e = q("select * from dbclient_test.nope", 10).await.unwrap_err();

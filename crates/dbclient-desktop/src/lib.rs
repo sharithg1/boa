@@ -117,9 +117,16 @@ async fn run_query(
     database: String,
     sql: String,
     limit: usize,
+    offset: Option<usize>,
 ) -> CmdResult<QueryResult> {
-    pg.query(&id, &database, &sql, limit.clamp(1, 100_000))
-        .await
+    pg.query(
+        &id,
+        &database,
+        &sql,
+        limit.clamp(1, 100_000),
+        offset.unwrap_or(0),
+    )
+    .await
 }
 
 #[tauri::command]

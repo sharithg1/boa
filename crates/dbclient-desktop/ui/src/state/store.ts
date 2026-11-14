@@ -570,7 +570,8 @@ export async function runQuery(
   }
   useStore.setState((s) => ({ running: { ...s.running, [tabId]: true } }))
   try {
-    const res = await backend.runQuery(connectionId, database, text, usePrefs.getState().rowLimit)
+    const pageSize = usePrefs.getState().rowLimit
+    const res = await backend.runQuery(connectionId, database, text, pageSize)
     if (res.columns.length) {
       log(connectionId, {
         ...base,
@@ -583,9 +584,14 @@ export async function runQuery(
         tabId,
         title,
         sql: text,
+        connectionId,
+        database,
         columns: res.columns,
         rows: res.rows,
         truncated: res.truncated,
+        pageable: res.pageable,
+        offset: 0,
+        pageSize,
         ms: res.ms,
         at
       }
@@ -627,6 +633,59 @@ export function cancelQuery(tabId: string) {
   void backend
     .cancelQuery(active.connectionId, active.database)
     .catch((e) => reportError('Cancel failed', e))
+}
+
+/**
+ * Shows another page of a tab's result by re-running its statement with an
+ * offset (DataGrip's LIMIT/OFFSET paging: stateless, so pages reflect the
+ * data at the time each one is fetched).
+ */
+export async function pageResult(tabId: string, offset: number) {
+  const r = useStore.getState().results[tabId]
+  if (!r?.pageable || useStore.getState().running[tabId]) return
+  const at = Date.now()
+  const base = { sql: r.sql, database: r.database, at, source: r.title }
+  useStore.setState((s) => ({ running: { ...s.running, [tabId]: true } }))
+  try {
+    const res = await backend.runQuery(r.connectionId, r.database, r.sql, r.pageSize, offset)
+    log(r.connectionId, {
+      ...base,
+      id: nextId++,
+      ms: res.ms,
+      rows: res.rows.length,
+      truncated: res.truncated,
+      offset
+    })
+    useStore.setState((s) =>
+      // Closed or re-run meanwhile: drop this page.
+      s.results[tabId]?.at !== r.at
+        ? {}
+        : {
+            results: {
+              ...s.results,
+              [tabId]: {
+                ...r,
+                columns: res.columns,
+                rows: res.rows,
+                truncated: res.truncated,
+                offset,
+                ms: res.ms
+              }
+            }
+          }
+    )
+  } catch (e) {
+    const err = errorText(e)
+    log(r.connectionId, { ...base, id: nextId++, ms: Date.now() - at, rows: null, ...err })
+    pushToast({ kind: 'error', title: 'Could not load page', body: err.error })
+    if (toBackendError(e).code === 'not_connected')
+      patchConnection(r.connectionId, { state: 'disconnected' })
+  } finally {
+    useStore.setState((s) => {
+      const { [tabId]: _, ...running } = s.running
+      return { running }
+    })
+  }
 }
 
 export function closeResult(tabId: string) {

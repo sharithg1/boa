@@ -1,0 +1,179 @@
+# Every screen, panel, menu and dialog of the DB client, for shoot.sh / catalog.sh.
+# `ss NN-name -- description`: keep names numbered and stable so before/after pairs line up.
+toasts off
+
+# --- Explorer ---
+ss 01-start -- First launch: saved data sources, all offline, nothing selected
+connect Production
+ss 02-connected -- Production connected: its default database listed, empty editor
+expand app_production
+wait 400
+expand prod-pg/app_production/public
+expand prod-pg/app_production/public/#table
+expand prod-pg/app_production/public/#view
+expand users
+ss 03-explorer-tree -- Explorer expanded down to a table's columns
+ss-el 04-explorer aside -- The Database Explorer on its own
+click [title="Choose databases to show"]
+wait 300
+ss 05-scope-databases -- "N of M" picker: which databases a connection shows
+key Escape
+click [title="Choose schemas to show"]
+wait 300
+ss 06-scope-schemas -- "N of M" picker: which schemas a database shows
+key Escape
+rclick-node Production
+wait 300
+ss 07-menu-connection -- Context menu of a connected data source
+key Escape
+rclick-node app_production
+wait 300
+ss 08-menu-database -- Context menu of a database
+key Escape
+rclick-node invoices
+wait 300
+ss 09-menu-table -- Context menu of a table
+key Escape
+collapse users
+click-button New
+wait 300
+ss 10-menu-new -- Explorer toolbar: New menu
+key Escape
+expand Staging
+wait 800
+ss 11-connect-failed -- A data source that fails to connect (no such server in the mock)
+collapse Staging
+
+# --- Table data ---
+node users
+wait 700
+ss 12-table-preview -- Table opened by a click: preview tab (italic), data grid, Structure panel
+dblclick-node invoices
+wait 700
+ss 13-table-pinned -- Table opened by a double-click: pinned tab
+fill Filter loaded rows = paid
+wait 300
+ss 14-table-filter -- Table data filtered by the "Filter loaded rows" box
+fill Filter loaded rows =
+click-button Next page
+wait 700
+ss 15-table-page-2 -- Second page of a table (pager)
+
+# --- Query console ---
+opt n
+wait 300
+ss 17-console-empty -- New query console
+sql-type select * from us
+wait 300
+ss 18-completion -- Completion list while typing a table name
+key Enter
+sql-type  u where u.
+wait 300
+ss 19-completion-columns -- Completion list of an alias's columns
+key Escape
+sql select id, email, role from users where org_id is not null;\n\nselect *\nfrom organizations\nwhere id in (select org_id from invoices where status = 'paid');
+caret 10
+ss 20-console-outline -- Console with two statements; the one at the caret is outlined
+run
+ss 21-result -- Statement result in the Database Output panel
+caret -40
+key Meta+Enter
+wait 300
+ss 22-statement-chooser -- ⌘↵ inside a subquery: choose statement or subquery
+key Enter
+wait 700
+ss 23-result-tabs -- A second result
+sql select id, action, payload from audit.events;
+run
+dblclick-cell 0:2
+wait 300
+ss 16-json-viewer -- JSON viewer on a jsonb cell
+key Escape
+output-tab Output
+ss 24-output-log -- Output log of the session's statements
+sql select * from missing_table;
+run
+ss 25-output-error -- A failed statement in the Output log
+click-button Query history
+wait 300
+ss 26-query-history -- Console toolbar: query history
+key Escape
+click text=Tx: Auto
+wait 300
+ss 27-tx-mode -- Console toolbar: transaction mode
+key Escape
+click [title="Default schema"]
+wait 300
+ss 28-default-schema -- Console toolbar: default schema
+key Escape
+
+# --- Title bar, right panel, status bar ---
+click [aria-label="New tab"]
+wait 300
+ss 29-menu-new-tab -- Title bar: New tab menu
+key Escape
+click [aria-label="Connection actions"]
+wait 300
+ss 30-menu-connection-actions -- Title bar: connection actions
+key Escape
+click-tab invoices
+right info
+ss 31-right-info -- Right panel: Info
+right history
+ss 32-right-history -- Right panel: History
+right structure
+ss 33-right-structure -- Right panel: Structure of the open table
+key Meta+k
+wait 300
+ss 34-palette -- ⌘K: find table
+type inv
+wait 300
+ss 35-palette-search -- ⌘K filtered
+key Escape
+
+# --- Dialogs and settings ---
+key Meta+o
+wait 400
+ss 36-new-data-source -- New data source dialog
+fill URL = postgresql://app:secret@db.example.com:5433/shop
+wait 300
+ss 37-new-data-source-url -- New data source: a pasted URL fills the form
+key Escape
+rclick-node Production
+menu-item Edit
+wait 400
+ss 38-edit-data-source -- Edit data source dialog
+key Escape
+js store.useStore.setState({ passwordPrompt: { connectionId: 'prod-pg' } })
+wait 300
+ss 39-password-prompt -- Password prompt
+key Escape
+js store.useStore.setState({ passwordPrompt: null })
+key Meta+,
+wait 300
+ss 40-settings-general -- Settings: General
+click-text Connections
+wait 300
+ss 41-settings-connections -- Settings: Connections
+click-text Keyboard
+wait 300
+ss 42-settings-keyboard -- Settings: Keyboard
+key Escape
+
+# --- Layout states ---
+opt b
+ss 43-no-sidebar -- Sidebar hidden
+opt b
+opt e
+ss 44-no-right-panel -- Right panel hidden
+opt e
+opt j
+ss 45-no-output -- Database Output hidden
+opt j
+viewport 900x600
+ss 46-narrow -- Narrow window (900x600)
+viewport
+toasts on
+js store.pushToast({ kind: 'error', title: 'Could not connect to Staging', body: 'connection refused' }, 0)
+wait 300
+ss 47-toast -- Error toast

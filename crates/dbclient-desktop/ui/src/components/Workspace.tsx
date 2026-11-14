@@ -27,7 +27,8 @@ import {
   type QueryTab,
   type TableTab
 } from '@/state/store'
-import { setPrefs, usePrefs } from '@/state/prefs'
+import { usePrefs } from '@/state/prefs'
+import { openHistory } from '@/state/history'
 import { rangePath, statementsAt, type Range, type TextMetrics } from '@/lib/statements'
 import { backend, toBackendError, type QueryResult } from '@/lib/backend'
 import { Pager } from './Pager'
@@ -283,14 +284,7 @@ function QueryView({
         >
           <Square className="size-3.5" />
         </IconButton>
-        <IconButton
-          label="Query history"
-          side="bottom"
-          onClick={() => {
-            setPrefs({ rightTab: 'history' })
-            useStore.setState({ rightPanelOpen: true })
-          }}
-        >
+        <IconButton label="Query history (⌘⌥E)" side="bottom" onClick={openHistory}>
           <History className="size-3.5" />
         </IconButton>
         <Sep />

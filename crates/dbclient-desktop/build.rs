@@ -19,6 +19,10 @@ const COMMANDS: &[&str] = &[
     "write_csv_file",
     "reveal_path",
     "apply_edits",
+    "history_list",
+    "history_append",
+    "history_delete",
+    "history_clear",
 ];
 
 fn main() {

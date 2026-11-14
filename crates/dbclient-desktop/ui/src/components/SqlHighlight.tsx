@@ -42,6 +42,23 @@ const Tokens = memo(function Tokens({ sql, catalog }: { sql: string; catalog?: C
   )
 })
 
+/** Highlighted SQL inline (no editor layer), e.g. in the query history list. */
+export const SqlText = memo(function SqlText({ sql, catalog }: { sql: string; catalog?: Catalog }) {
+  return (
+    <>
+      {tokenize(sql, catalog).map((t, i) =>
+        t.kind === 'plain' ? (
+          t.text
+        ) : (
+          <span key={i} className={CLASS[t.kind]}>
+            {t.text}
+          </span>
+        )
+      )}
+    </>
+  )
+})
+
 export type EditorMark = { d: string; kind: 'outline' | 'fill' }
 
 export const SqlHighlight = forwardRef<

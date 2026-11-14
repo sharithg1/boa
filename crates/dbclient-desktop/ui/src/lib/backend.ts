@@ -11,6 +11,7 @@ import { type ExportBackend, mockExport, tauriExport } from './exportBackend'
 import type { ResultColumn, Schema } from '@/state/types'
 import type { EditStatement } from './gridEdits'
 import { applyMockEdits } from '@/state/mockEdits'
+import { localHistoryStore, type HistoryRecord } from './history'
 
 export type SslMode = 'disable' | 'prefer' | 'require' | 'verify-full'
 
@@ -93,6 +94,11 @@ export type Backend = {
     offset?: number
   ): Promise<QueryResult>
   cancelQuery(id: string, database: string): Promise<void>
+  /** The connection's saved query history, oldest first. */
+  historyList(id: string): Promise<HistoryRecord[]>
+  historyAppend(id: string, entry: HistoryRecord): Promise<void>
+  historyDelete(id: string, ids: string[]): Promise<void>
+  historyClear(id: string): Promise<void>
   /**
    * Runs the data editor's statements as one unit: all or nothing, each
    * `exactlyOne` statement must affect exactly one row.
@@ -115,7 +121,11 @@ const tauriBackend: Backend = {
     invoke('run_query', { id, database, sql, limit, offset }),
   cancelQuery: (id, database) => invoke('cancel_query', { id, database }),
   ...tauriExport,
-  applyEdits: (id, database, statements) => invoke('apply_edits', { id, database, statements })
+  applyEdits: (id, database, statements) => invoke('apply_edits', { id, database, statements }),
+  historyList: (id) => invoke('history_list', { id }),
+  historyAppend: (id, entry) => invoke('history_append', { id, entry }),
+  historyDelete: (id, ids) => invoke('history_delete', { id, ids }),
+  historyClear: (id) => invoke('history_clear', { id })
 }
 
 // ── In-browser mock ───────────────────────────────────────────────────────
@@ -142,6 +152,7 @@ function mockBackend(): Backend {
   const dbOf = (id: string, database: string) =>
     samples.find((c) => c.id === id)?.databases.find((d) => d.name === database)
   const cancelled = new Set<string>()
+  const history = localHistoryStore(typeof localStorage === 'undefined' ? undefined : localStorage)
   return {
     real: false,
     listConnections: async () => [...saved.values()],
@@ -154,6 +165,7 @@ function mockBackend(): Backend {
     },
     deleteConnection: async (id) => {
       saved.delete(id)
+      history.clear(id)
     },
     testConnection: async (config) => {
       await sleep(300)
@@ -207,7 +219,11 @@ function mockBackend(): Backend {
     applyEdits: async (id, database, statements) => {
       await sleep(150)
       return applyMockEdits(dbOf(id, database), statements)
-    }
+    },
+    historyList: async (id) => history.list(id),
+    historyAppend: async (id, entry) => history.append(id, entry),
+    historyDelete: async (id, ids) => history.remove(id, ids),
+    historyClear: async (id) => history.clear(id)
   }
 }
 

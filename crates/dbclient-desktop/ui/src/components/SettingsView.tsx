@@ -78,6 +78,12 @@ const SECTIONS: { title: string; rows: Row[] }[] = [
         kind: 'switch',
         label: 'Confirm destructive statements',
         desc: 'Ask before running UPDATE or DELETE without a WHERE clause, DROP or TRUNCATE.'
+      },
+      {
+        id: 'recordHistory',
+        kind: 'switch',
+        label: 'Save query history',
+        desc: 'Keep every statement you run, per connection, for Query History (⌘⌥E).'
       }
     ]
   }
@@ -87,6 +93,7 @@ const KEYS: [string, string][] = [
   ['⌘K', 'Search tables'],
   ['⌘T / ⌥N', 'New query'],
   ['⌘↵', 'Run query'],
+  ['⌘⌥E', 'Query history'],
   ['⌘W', 'Close tab'],
   ['⌥1 … ⌥9', 'Go to tab'],
   ['⌥↑ / ⌥↓', 'Previous / next database'],

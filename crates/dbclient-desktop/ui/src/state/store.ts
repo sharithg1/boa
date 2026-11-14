@@ -5,6 +5,7 @@
 
 import { create } from 'zustand'
 import { backend, toBackendError, type ConnConfig, type SavedConnection } from '@/lib/backend'
+import { forgetHistory, recordHistory } from './history'
 import { setPrefs, usePrefs } from './prefs'
 import type { Connection, HistoryEntry, ResultSet, Table } from './types'
 
@@ -401,6 +402,7 @@ export async function saveConnection(
 
 export async function deleteConnection(id: string) {
   await backend.deleteConnection(id)
+  forgetHistory(id)
   useStore.setState((s) => {
     const { [id]: _, ...connections } = s.connections
     const workspaces = Object.fromEntries(
@@ -533,13 +535,15 @@ export function connectionString(c: Connection, database?: string): string {
 
 // ── Queries ───────────────────────────────────────────────────────────────
 
-function log(connectionId: string, entry: HistoryEntry) {
+/** Adds to the Output log; `record`: also to the saved query history (not for page fetches). */
+function log(connectionId: string, entry: HistoryEntry, record = true) {
   useStore.setState((s) => ({
     history: {
       ...s.history,
       [connectionId]: [entry, ...(s.history[connectionId] ?? [])].slice(0, 200)
     }
   }))
+  if (record) recordHistory(connectionId, entry)
 }
 
 function errorText(e: unknown): { error: string; detail?: string } {
@@ -667,14 +671,18 @@ export async function pageResult(tabId: string, offset: number) {
   useStore.setState((s) => ({ running: { ...s.running, [tabId]: true } }))
   try {
     const res = await backend.runQuery(r.connectionId, r.database, r.sql, r.pageSize, offset)
-    log(r.connectionId, {
-      ...base,
-      id: nextId++,
-      ms: res.ms,
-      rows: res.rows.length,
-      truncated: res.truncated,
-      offset
-    })
+    log(
+      r.connectionId,
+      {
+        ...base,
+        id: nextId++,
+        ms: res.ms,
+        rows: res.rows.length,
+        truncated: res.truncated,
+        offset
+      },
+      false
+    )
     useStore.setState((s) =>
       // Closed or re-run meanwhile: drop this page.
       s.results[tabId]?.at !== r.at
@@ -695,7 +703,7 @@ export async function pageResult(tabId: string, offset: number) {
     )
   } catch (e) {
     const err = errorText(e)
-    log(r.connectionId, { ...base, id: nextId++, ms: Date.now() - at, rows: null, ...err })
+    log(r.connectionId, { ...base, id: nextId++, ms: Date.now() - at, rows: null, ...err }, false)
     pushToast({ kind: 'error', title: 'Could not load page', body: err.error })
     if (toBackendError(e).code === 'not_connected')
       patchConnection(r.connectionId, { state: 'disconnected' })

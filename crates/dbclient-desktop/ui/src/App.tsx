@@ -2,6 +2,7 @@ import { useEffect } from 'react'
 import { BottomPanel } from './components/BottomPanel'
 import { CommandPalette } from './components/CommandPalette'
 import { ConnectionDialog, PasswordPrompt } from './components/ConnectionDialog'
+import { QueryHistory } from './components/QueryHistory'
 import { RightPanel } from './components/RightPanel'
 import { SettingsView } from './components/SettingsView'
 import { Sidebar, newQueryTarget } from './components/Sidebar'
@@ -20,6 +21,7 @@ import {
   useStore
 } from './state/store'
 import { startSession } from './state/session'
+import { toggleHistory } from './state/history'
 
 export function App() {
   const sidebarOpen = useStore((s) => s.sidebarOpen)
@@ -51,6 +53,7 @@ export function App() {
       <StatusBar />
       <SettingsView />
       <CommandPalette />
+      <QueryHistory />
       <ConnectionDialog />
       <PasswordPrompt />
       <DiscardEditsDialog />
@@ -75,7 +78,7 @@ function isOptionShortcut(e: KeyboardEvent): boolean {
 
 /**
  * Cmd/Ctrl+K search, +T new query, +W close tab, +O new connection,
- * +, settings; ⌥↑↓ previous / next database, ⌥1-9 tab, ⌥N new query,
+ * +, settings, +⌥E query history; ⌥↑↓ previous / next database, ⌥1-9 tab, ⌥N new query,
  * ⌥B sidebar, ⌥E right panel, ⌥J Database Output.
  */
 function useShortcuts() {
@@ -87,6 +90,13 @@ function useShortcuts() {
       if (mod && (e.code === 'KeyK' || e.code === 'KeyP')) {
         e.preventDefault()
         useStore.setState({ paletteOpen: !state.paletteOpen, settings: null })
+        return
+      }
+      if (mod && e.altKey && e.code === 'KeyE') {
+        e.preventDefault()
+        e.stopPropagation()
+        useStore.setState({ paletteOpen: false, settings: null })
+        toggleHistory()
         return
       }
       if (mod && e.code === 'KeyO' && !e.shiftKey && !overlay) {

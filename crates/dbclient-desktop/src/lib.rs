@@ -7,10 +7,12 @@
 mod connections;
 mod edits;
 mod error;
+mod history;
 mod pg;
 
 use connections::{ConnConfig, SavedConnection};
 use error::{CmdError, CmdResult};
+use history::History;
 use pg::{ConnectInfo, CsvOptions, ExportResult, Pg, QueryResult, Schema};
 use serde::Serialize;
 use std::path::PathBuf;
@@ -56,9 +58,15 @@ fn save_connection(
 }
 
 #[tauri::command]
-async fn delete_connection(app: AppHandle, pg: State<'_, Pg>, id: String) -> CmdResult<()> {
+async fn delete_connection(
+    app: AppHandle,
+    pg: State<'_, Pg>,
+    history: State<'_, History>,
+    id: String,
+) -> CmdResult<()> {
     pg.disconnect(&id).await;
-    connections::remove(&config_dir(&app)?, &id)
+    connections::remove(&config_dir(&app)?, &id)?;
+    history.clear(&config_dir(&app)?, &id)
 }
 
 /// Connects with unsaved settings; returns the server version.
@@ -195,6 +203,41 @@ async fn apply_edits(
     pg.apply_edits(&id, &database, &statements).await
 }
 
+/// The connection's query history, oldest first.
+#[tauri::command]
+fn history_list(
+    app: AppHandle,
+    history: State<'_, History>,
+    id: String,
+) -> CmdResult<Vec<history::Entry>> {
+    history.list(&config_dir(&app)?, &id)
+}
+
+#[tauri::command]
+fn history_append(
+    app: AppHandle,
+    history: State<'_, History>,
+    id: String,
+    entry: history::Entry,
+) -> CmdResult<()> {
+    history.append(&config_dir(&app)?, &id, &entry)
+}
+
+#[tauri::command]
+fn history_delete(
+    app: AppHandle,
+    history: State<'_, History>,
+    id: String,
+    ids: Vec<String>,
+) -> CmdResult<()> {
+    history.delete(&config_dir(&app)?, &id, &ids)
+}
+
+#[tauri::command]
+fn history_clear(app: AppHandle, history: State<'_, History>, id: String) -> CmdResult<()> {
+    history.clear(&config_dir(&app)?, &id)
+}
+
 fn init_logging() {
     let filter = tracing_subscriber::EnvFilter::try_from_env("DBCLIENT_LOG")
         .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"));
@@ -213,6 +256,7 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .manage(Pg::default())
+        .manage(History::default())
         .invoke_handler(tauri::generate_handler![
             app_info,
             list_connections,
@@ -228,7 +272,11 @@ pub fn run() {
             export_csv,
             write_csv_file,
             reveal_path,
-            apply_edits
+            apply_edits,
+            history_list,
+            history_append,
+            history_delete,
+            history_clear
         ])
         .run(tauri::generate_context!())
         .expect("error while running the app");

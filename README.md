@@ -112,3 +112,7 @@ Checks: `pnpm --dir crates/dbclient-desktop/ui typecheck`, `… lint`, `… test
 `cargo clippy --all-targets`, `cargo test`. The live Postgres test runs when
 `PGHOST` (and `PGPORT`, `PGUSER`, `PGPASSWORD`, `PGDATABASE`) point at a
 server; it creates and drops a `dbclient_test` schema.
+
+CI (`.github/workflows/ci.yml`) runs these on every pull request and push to
+`main`. Releases are cut from Actions → Cut release (or
+`scripts/release.sh`); see [docs/RELEASING.md](docs/RELEASING.md).

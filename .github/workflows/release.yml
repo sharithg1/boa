@@ -1,0 +1,227 @@
+name: Release
+
+# Pushing a tag vX.Y.Z (scripts/release.sh creates it) builds the macOS app
+# and publishes a GitHub Release; so does a manual run on a tag (the Cut
+# release workflow starts it that way). Pull requests that touch the release
+# machinery, and manual runs on a branch, do the same builds without
+# publishing (the artifacts are kept on the workflow run). See
+# docs/RELEASING.md.
+
+on:
+  push:
+    tags: ['v*']
+  pull_request:
+    paths:
+      - .github/workflows/release.yml
+      - scripts/check-version.sh
+      - crates/dbclient-desktop/tauri.conf.json
+  workflow_dispatch:
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+
+jobs:
+  version:
+    name: check version
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+      signing: ${{ steps.v.outputs.signing }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: v
+        name: tag, Cargo.toml and tauri.conf.json agree
+        env:
+          ALLOW_UNSIGNED: ${{ vars.ALLOW_UNSIGNED_RELEASES }}
+        run: |
+          if [ "$GITHUB_REF_TYPE" = tag ]; then
+            version=$(scripts/check-version.sh "$GITHUB_REF_NAME")
+          else
+            version=$(scripts/check-version.sh)
+          fi
+          # Signing policy: a stable tag (no "-suffix") must be signed with a
+          # Developer ID and notarized, unless the repository variable
+          # ALLOW_UNSIGNED_RELEASES is "true". Pre-release tags, pull requests
+          # and branch runs sign when the secrets exist and are ad-hoc otherwise.
+          signing=optional
+          if [ "$GITHUB_REF_TYPE" = tag ]; then
+            case "$version" in
+              *-*) ;;
+              *) [ "$ALLOW_UNSIGNED" = true ] || signing=required ;;
+            esac
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "signing=$signing" >> "$GITHUB_OUTPUT"
+          echo "Boa $version (signing: $signing)" >> "$GITHUB_STEP_SUMMARY"
+
+  # The release commit is pushed with a deploy key (Cut release) or as a tag,
+  # neither of which runs CI on it: run it here and publish only if it passes.
+  ci:
+    name: CI
+    if: github.ref_type == 'tag'
+    uses: ./.github/workflows/ci.yml
+
+  app:
+    name: Boa.app (${{ matrix.arch }})
+    needs: version
+    runs-on: macos-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: aarch64-apple-darwin
+            arch: aarch64
+          - target: x86_64-apple-darwin
+            arch: x86_64
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Rust (rust-toolchain.toml)
+        run: |
+          rustup toolchain install
+          rustup target add ${{ matrix.target }}
+      - name: Cargo.lock is up to date
+        # `tauri build` runs cargo without --locked; fail here instead of
+        # building from a lockfile it silently rewrote.
+        run: cargo fetch --locked
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: app-${{ matrix.target }}
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.18.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+          cache-dependency-path: crates/dbclient-desktop/ui/pnpm-lock.yaml
+      - run: pnpm install --frozen-lockfile
+        working-directory: crates/dbclient-desktop/ui
+
+      - name: signing configuration
+        env:
+          SIGNING: ${{ needs.version.outputs.signing }}
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        # Only set the variables Tauri reads when the secrets exist: an empty
+        # APPLE_CERTIFICATE would make it try (and fail) to import one.
+        run: |
+          put() { { echo "$1<<__BOA_EOF__"; echo "$2"; echo "__BOA_EOF__"; } >> "$GITHUB_ENV"; }
+          if [ "$SIGNING" = required ]; then
+            for v in APPLE_CERTIFICATE APPLE_CERTIFICATE_PASSWORD APPLE_SIGNING_IDENTITY APPLE_ID APPLE_PASSWORD APPLE_TEAM_ID; do
+              if [ -z "${!v}" ]; then
+                echo "::error::Stable releases must be signed and notarized: secret $v is not set (or set the repository variable ALLOW_UNSIGNED_RELEASES=true; see docs/RELEASING.md)."
+                exit 1
+              fi
+            done
+          fi
+          if [ -n "$APPLE_CERTIFICATE" ] && [ -n "$APPLE_SIGNING_IDENTITY" ]; then
+            echo "::add-mask::$APPLE_SIGNING_IDENTITY"
+            put APPLE_CERTIFICATE "$APPLE_CERTIFICATE"
+            put APPLE_CERTIFICATE_PASSWORD "$APPLE_CERTIFICATE_PASSWORD"
+            put APPLE_SIGNING_IDENTITY "$APPLE_SIGNING_IDENTITY"
+            if [ -n "$APPLE_ID" ] && [ -n "$APPLE_PASSWORD" ] && [ -n "$APPLE_TEAM_ID" ]; then
+              put APPLE_ID "$APPLE_ID"
+              put APPLE_PASSWORD "$APPLE_PASSWORD"
+              put APPLE_TEAM_ID "$APPLE_TEAM_ID"
+              echo "Signing with Developer ID and notarizing." | tee -a "$GITHUB_STEP_SUMMARY"
+            else
+              echo "Signing with Developer ID; not notarizing (APPLE_ID/APPLE_PASSWORD/APPLE_TEAM_ID unset)." | tee -a "$GITHUB_STEP_SUMMARY"
+            fi
+          else
+            # Ad-hoc signature: the bundle is sealed, but Gatekeeper still
+            # blocks the downloaded app until its quarantine flag is removed.
+            put APPLE_SIGNING_IDENTITY "-"
+            echo "Unsigned build (ad-hoc signature): see docs/RELEASING.md for the xattr workaround." | tee -a "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: tauri build
+        working-directory: crates/dbclient-desktop/ui
+        env:
+          TARGET: ${{ matrix.target }}
+        run: pnpm tauri build --ci --target "$TARGET" --bundles "app,dmg"
+
+      - name: check and collect bundle
+        run: |
+          bundle="target/${{ matrix.target }}/release/bundle"
+          app="$bundle/macos/Boa.app"
+          plist_version=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$app/Contents/Info.plist")
+          [ "$plist_version" = "$VERSION" ] || { echo "::error::Info.plist version $plist_version != $VERSION"; exit 1; }
+          codesign --verify --deep --strict --verbose=2 "$app"
+          mkdir -p out
+          dmgs=("$bundle"/dmg/*.dmg)
+          if [ ${#dmgs[@]} != 1 ] || [ ! -f "${dmgs[0]}" ]; then
+            echo "::error::expected one dmg, got: ${dmgs[*]}"; exit 1
+          fi
+          cp "${dmgs[0]}" "out/Boa_${VERSION}_macos-${{ matrix.arch }}.dmg"
+          ditto -c -k --keepParent "$app" "out/Boa_${VERSION}_macos-${{ matrix.arch }}.app.zip"
+          ls -l out
+      - uses: actions/upload-artifact@v4
+        with:
+          name: app-${{ matrix.arch }}
+          path: out/*
+          if-no-files-found: error
+
+  publish:
+    name: publish GitHub Release
+    if: github.ref_type == 'tag'
+    needs: [version, ci, app]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: assets
+          merge-multiple: true
+      - name: checksums
+        working-directory: assets
+        run: |
+          sha256sum -- * > SHA256SUMS
+          cat SHA256SUMS
+      - name: publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+        # A published release is never changed: its assets are what users
+        # downloaded and checked against SHA256SUMS. The assets go into a
+        # draft first, are downloaded back and compared, and only then is the
+        # draft published, so a failed upload never leaves a half-replaced release.
+        run: |
+          while draft=$(gh release view "$TAG" --json isDraft --jq .isDraft 2>/dev/null); do
+            if [ "$draft" != true ]; then
+              echo "::error::Release $TAG is already published; leaving its assets alone. To replace it, delete the release on GitHub and re-run, or cut a new version."
+              exit 1
+            fi
+            echo "Deleting the unpublished draft of $TAG left by an earlier run."
+            gh release delete "$TAG" --yes
+          done
+
+          flags=()
+          case "$TAG" in *-*) flags+=(--prerelease) ;; esac
+          gh release create "$TAG" assets/* --draft --verify-tag --generate-notes \
+            --title "Boa $TAG" "${flags[@]}"
+
+          mkdir uploaded
+          gh release download "$TAG" --dir uploaded
+          diff <(cd assets && sha256sum -- *) <(cd uploaded && sha256sum -- *) || {
+            echo "::error::The draft's assets differ from the built ones; the draft is left unpublished."
+            exit 1
+          }
+
+          gh release edit "$TAG" --draft=false
+          echo "Published ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/releases/tag/$TAG" >> "$GITHUB_STEP_SUMMARY"

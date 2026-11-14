@@ -1,0 +1,4 @@
+[profile.ci]
+# Bound the number of simultaneous test threads on the hosted runners.
+test-threads = 4
+fail-fast = false

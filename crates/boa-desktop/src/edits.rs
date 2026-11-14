@@ -13,7 +13,7 @@ use serde::{Deserialize, Serialize};
 use std::time::Instant;
 use tokio_postgres::Client;
 
-const SAVEPOINT: &str = "__dbclient_edit";
+const SAVEPOINT: &str = "__boa_edit";
 
 /// One generated statement. (The UI sends more fields; they're ignored.)
 #[derive(Debug, Deserialize)]

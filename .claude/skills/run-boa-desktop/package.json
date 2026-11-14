@@ -1,5 +1,5 @@
 {
-  "name": "run-dbclient-desktop-driver",
+  "name": "run-boa-desktop-driver",
   "private": true,
   "type": "module",
   "dependencies": {

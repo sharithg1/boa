@@ -1,9 +1,9 @@
 ---
-name: run-dbclient-desktop
-description: Run, start, drive or screenshot the DB Client desktop UI (crates/dbclient-desktop/ui) against its mock backend in headless Chrome — connect a data source, expand the explorer, open tables, type and run SQL in a console, read completions / result grids / the output log, take screenshots. Use to verify a UI change in the running app, not just in unit tests.
+name: run-boa-desktop
+description: Run, start, drive or screenshot the Boa desktop UI (crates/boa-desktop/ui) against its mock backend in headless Chrome — connect a data source, expand the explorer, open tables, type and run SQL in a console, read completions / result grids / the output log, take screenshots. Use to verify a UI change in the running app, not just in unit tests.
 ---
 
-# Run the DB Client UI
+# Run the Boa UI
 
 The UI is a React + Vite app. In a plain browser (`isTauri()` false) it runs on
 the **mock backend** (`src/lib/backend.ts` → `mockBackend()`, sample data in
@@ -24,8 +24,8 @@ Paths below are relative to the repo root. Verified on macOS.
 
 ```sh
 export PATH="$HOME/.nvm/versions/node/v24.18.0/bin:$PATH"
-pnpm --dir crates/dbclient-desktop/ui install --frozen-lockfile
-npm install --prefix .claude/skills/run-dbclient-desktop   # playwright-core for the driver
+pnpm --dir crates/boa-desktop/ui install --frozen-lockfile
+npm install --prefix .claude/skills/run-boa-desktop   # playwright-core for the driver
 ```
 
 ## Run (agent path)
@@ -36,7 +36,7 @@ npm install --prefix .claude/skills/run-dbclient-desktop   # playwright-core for
    agents don't share one.
 
    ```sh
-   cd crates/dbclient-desktop/ui && PATH="$HOME/.nvm/versions/node/v24.18.0/bin:$PATH" pnpm exec vite --port 5273 --strictPort
+   cd crates/boa-desktop/ui && PATH="$HOME/.nvm/versions/node/v24.18.0/bin:$PATH" pnpm exec vite --port 5273 --strictPort
    ```
 
    "Port 5273 is already in use": check whose it is before reusing it
@@ -50,7 +50,7 @@ npm install --prefix .claude/skills/run-dbclient-desktop   # playwright-core for
 
    ```sh
    curl -sf --retry 30 --retry-connrefused --retry-delay 1 -o /dev/null localhost:5273 || { echo "Vite is not up"; exit 1; }
-   SHOTS=<scratchpad>/shots node .claude/skills/run-dbclient-desktop/driver.mjs <<'EOF'
+   SHOTS=<scratchpad>/shots node .claude/skills/run-boa-desktop/driver.mjs <<'EOF'
    connect Production
    expand app_production
    expand prod-pg/app_production/public
@@ -75,7 +75,7 @@ npm install --prefix .claude/skills/run-dbclient-desktop   # playwright-core for
    <path>`. Read the PNG to look at it. Exit code 1 and `FAILED <line>:
    <reason>` on the first step that fails; a page exception is printed as
    `pageerror during \`<step>\`: …` and also makes it exit 1. The driver
-   refuses a page whose title isn't `DB Client` (wrong port).
+   refuses a page whose title isn't `Boa` (wrong port).
 
    Another port or path: `node driver.mjs http://localhost:5280/`.
 
@@ -145,7 +145,7 @@ scale, on its own Vite. With `--base <ref>` it also runs the tour against
 (changed pixels tinted magenta) for each screen that changed.
 
 ```sh
-.claude/skills/run-dbclient-desktop/shoot.sh <scratchpad>/review --base main
+.claude/skills/run-boa-desktop/shoot.sh <scratchpad>/review --base main
 # options: --sizes "1400x900 1100x720" (default)  --tour <file>
 # ports: PORT (5274, this checkout), BASE_PORT (5275, the base ref)
 ```
@@ -169,14 +169,14 @@ committed).
 
 ## Run (human path)
 
-`pnpm --dir crates/dbclient-desktop/ui dev:web`, then open
+`pnpm --dir crates/boa-desktop/ui dev:web`, then open
 `http://localhost:1420`. The real app (`… dev`) needs the Rust toolchain and a
 Postgres server; not covered here.
 
 ## Test
 
 ```sh
-pnpm --dir crates/dbclient-desktop/ui typecheck && pnpm --dir crates/dbclient-desktop/ui lint && pnpm --dir crates/dbclient-desktop/ui test
+pnpm --dir crates/boa-desktop/ui typecheck && pnpm --dir crates/boa-desktop/ui lint && pnpm --dir crates/boa-desktop/ui test
 ```
 
 ## Gotchas
@@ -218,5 +218,5 @@ pnpm --dir crates/dbclient-desktop/ui typecheck && pnpm --dir crates/dbclient-de
 
 - `page.goto: net::ERR_CONNECTION_REFUSED` — Vite isn't up yet (or died); run
   the `curl` wait first, check the Vite task output.
-- `FAILED: … is not the DB Client UI (title "…")` — another app's dev server
+- `FAILED: … is not the Boa UI (title "…")` — another app's dev server
   is on that port; start this repo's Vite on a free one.

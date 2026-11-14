@@ -44,7 +44,7 @@ serve() {
     echo "port $2 is already taken (another Vite?); set PORT / BASE_PORT" >&2
     exit 1
   fi
-  (cd "$1/crates/dbclient-desktop/ui" && exec pnpm exec vite --port "$2" --strictPort >"$out/vite-$2.log" 2>&1) &
+  (cd "$1/crates/boa-desktop/ui" && exec pnpm exec vite --port "$2" --strictPort >"$out/vite-$2.log" 2>&1) &
   pids+=($!)
   curl -sf --retry 40 --retry-connrefused --retry-delay 1 -o /dev/null "localhost:$2" ||
     { echo "Vite on $2 never came up; see $out/vite-$2.log" >&2; exit 1; }
@@ -74,7 +74,7 @@ if [ -n "$base" ]; then
   base_src="$out/.base-src"
   rm -rf "$out/before" "$out/compare"
   git -C "$repo" worktree add --detach --force "$base_src" "$base" >/dev/null
-  (cd "$base_src/crates/dbclient-desktop/ui" && pnpm install --frozen-lockfile --prefer-offline >/dev/null)
+  (cd "$base_src/crates/boa-desktop/ui" && pnpm install --frozen-lockfile --prefer-offline >/dev/null)
   serve "$base_src" "$base_port"
   tour_all "$base_port" before
   for s in $sizes; do

@@ -22,18 +22,18 @@ const rows = shots
 
 writeFileSync(
   `${dir}/README.md`,
-  `# DB Client UI catalog
+  `# Boa UI catalog
 
 Screenshots of every screen, panel, menu and dialog of the desktop app, for a
 design review. Captured from branch \`${git('rev-parse --abbrev-ref HEAD')}\` at
 \`${git('rev-parse --short HEAD')}\` on ${new Date().toISOString().slice(0, 10)}.
 
-Regenerate with \`.claude/skills/run-dbclient-desktop/catalog.sh\` (the screen list is
-\`.claude/skills/run-dbclient-desktop/tour.txt\`).
+Regenerate with \`.claude/skills/run-boa-desktop/catalog.sh\` (the screen list is
+\`.claude/skills/run-boa-desktop/tour.txt\`).
 
 ## How these were taken
 
-- The real UI code (React, \`crates/dbclient-desktop/ui\`) running against its **mock
+- The real UI code (React, \`crates/boa-desktop/ui\`) running against its **mock
   backend** in headless Chrome, at 2× device pixel ratio. Connections, schemas,
   rows and timings are sample data.
 - The app has a single dark theme.

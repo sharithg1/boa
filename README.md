@@ -82,8 +82,8 @@ status bar.
 ## Layout
 
 ```
-crates/dbclient-desktop/         Tauri app (Rust side: src/lib.rs)
-crates/dbclient-desktop/ui/      React frontend (Vite, Tailwind v4, shadcn/ui)
+crates/boa-desktop/              Tauri app (Rust side: src/lib.rs)
+crates/boa-desktop/ui/           React frontend (Vite, Tailwind v4, shadcn/ui)
   src/state/store.ts             app state: connections, tabs, panels, toasts
   src/state/tx.ts, guards.ts     transaction mode / state per session; confirmations
   src/lib/guard.ts               destructive and read-only statement checks
@@ -91,7 +91,7 @@ crates/dbclient-desktop/ui/      React frontend (Vite, Tailwind v4, shadcn/ui)
   src/state/mockData.ts          generated rows for the browser mock
   src/lib/backend.ts             Tauri commands (or the browser mock)
   src/state/history.ts           query history (persisted; QueryHistory.tsx is the view)
-crates/dbclient-desktop/src/     pg.rs (sessions, introspection, queries), tx.rs (transaction state probe),
+crates/boa-desktop/src/          pg.rs (sessions, introspection, queries), tx.rs (transaction state probe),
                                  connections.rs (saved settings + passwords), edits.rs (submitting grid edits),
                                  history.rs (query history)
   src/components/                Sidebar, TitleBar, Workspace, BottomPanel, DataGrid, RightPanel, StatusBar, …
@@ -101,17 +101,17 @@ crates/dbclient-desktop/src/     pg.rs (sessions, introspection, queries), tx.rs
 
 ```sh
 # UI only, in a browser (http://localhost:1420; add ?overlay to preview the macOS title-bar inset)
-pnpm --dir crates/dbclient-desktop/ui install
-pnpm --dir crates/dbclient-desktop/ui dev:web
+pnpm --dir crates/boa-desktop/ui install
+pnpm --dir crates/boa-desktop/ui dev:web
 
 # Desktop app
-pnpm --dir crates/dbclient-desktop/ui dev
+pnpm --dir crates/boa-desktop/ui dev
 ```
 
-Checks: `pnpm --dir crates/dbclient-desktop/ui typecheck`, `… lint`, `… test`,
+Checks: `pnpm --dir crates/boa-desktop/ui typecheck`, `… lint`, `… test`,
 `cargo clippy --all-targets`, `cargo test`. The live Postgres test runs when
 `PGHOST` (and `PGPORT`, `PGUSER`, `PGPASSWORD`, `PGDATABASE`) point at a
-server; it creates and drops a `dbclient_test` schema.
+server; it creates and drops a `boa_test` schema.
 
 CI (`.github/workflows/ci.yml`) runs these on every pull request and push to
 `main`. Releases are cut from Actions → Cut release (or

@@ -270,7 +270,7 @@ fn now_ms() -> u64 {
 }
 
 fn init_logging() {
-    let filter = tracing_subscriber::EnvFilter::try_from_env("DBCLIENT_LOG")
+    let filter = tracing_subscriber::EnvFilter::try_from_env("BOA_LOG")
         .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"));
     let _ = tracing_subscriber::fmt()
         .with_env_filter(filter)

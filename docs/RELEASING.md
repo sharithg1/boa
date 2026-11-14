@@ -23,7 +23,7 @@ the release page afterwards if needed.
   --profile ci` (`.config/nextest.toml`) and doctests. The Postgres
   integration tests skip themselves unless `PGHOST` is set.
 - **desktop UI (typecheck, lint, test)**: `pnpm typecheck`, `pnpm lint`
-  (Biome) and `pnpm test` (Vitest) in `crates/dbclient-desktop/ui`.
+  (Biome) and `pnpm test` (Vitest) in `crates/boa-desktop/ui`.
 
 `main` has a ruleset requiring a pull request and these three checks.
 
@@ -56,12 +56,12 @@ git push --atomic origin main v0.1.5 # the script prints this; it never pushes
 
 `scripts/release.sh` sets the version in the root `Cargo.toml`
 (`[workspace.package]`, inherited by the desktop crate) and in
-`crates/dbclient-desktop/tauri.conf.json`, refreshes `Cargo.lock`, commits
+`crates/boa-desktop/tauri.conf.json`, refreshes `Cargo.lock`, commits
 and creates an annotated tag. It refuses a version that is not newer than
 the current one, a dirty tree, a branch other than `main` (unless
 `--allow-branch`), an existing tag, or a `main` behind `origin/main`. To
 undo before pushing: `git tag -d v0.1.5 && git reset --hard HEAD~1`.
-(`crates/dbclient-desktop/ui/package.json` has its own unused `0.1.0`; it is
+(`crates/boa-desktop/ui/package.json` has its own unused `0.1.0`; it is
 not part of the release version.)
 
 The workflow then:
@@ -140,7 +140,7 @@ and staples it. The run summary says which mode was used.
 ## Building release artifacts locally
 
 ```sh
-cd crates/dbclient-desktop/ui && pnpm install
+cd crates/boa-desktop/ui && pnpm install
 pnpm tauri build --bundles app,dmg                              # this Mac's arch
 pnpm tauri build --target x86_64-apple-darwin --bundles app,dmg # Intel (rustup target add x86_64-apple-darwin)
 ```

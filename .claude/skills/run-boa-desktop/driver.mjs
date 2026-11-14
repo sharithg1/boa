@@ -32,8 +32,8 @@ p.on('pageerror', (e) => {
 })
 await p.goto(url)
 // Other Vite apps live on nearby ports; don't drive the wrong one.
-if ((await p.title()) !== 'DB Client') {
-  console.log(`FAILED: ${url} is not the DB Client UI (title "${await p.title()}")`)
+if ((await p.title()) !== 'Boa') {
+  console.log(`FAILED: ${url} is not the Boa UI (title "${await p.title()}")`)
   await browser.close()
   process.exit(1)
 }

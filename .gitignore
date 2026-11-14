@@ -1,4 +1,4 @@
 target/
 node_modules/
 dist/
-crates/dbclient-desktop/gen/
+crates/boa-desktop/gen/

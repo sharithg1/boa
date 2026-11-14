@@ -169,6 +169,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "boa-desktop"
+version = "0.1.0"
+dependencies = [
+ "futures-util",
+ "native-tls",
+ "postgres-native-tls",
+ "serde",
+ "serde_json",
+ "tauri",
+ "tauri-build",
+ "tauri-plugin-dialog",
+ "tokio",
+ "tokio-postgres",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "brotli"
 version = "9.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -554,24 +572,6 @@ dependencies = [
  "darling_core",
  "quote",
  "syn 2.0.119",
-]
-
-[[package]]
-name = "dbclient-desktop"
-version = "0.1.0"
-dependencies = [
- "futures-util",
- "native-tls",
- "postgres-native-tls",
- "serde",
- "serde_json",
- "tauri",
- "tauri-build",
- "tauri-plugin-dialog",
- "tokio",
- "tokio-postgres",
- "tracing",
- "tracing-subscriber",
 ]
 
 [[package]]

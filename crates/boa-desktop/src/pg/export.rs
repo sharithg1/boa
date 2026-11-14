@@ -110,9 +110,9 @@ impl Pg {
         let user_tx = s.tx.get() != TxState::Idle;
         let (open, ok, err) = if user_tx {
             (
-                "savepoint __dbclient_export",
-                "rollback to savepoint __dbclient_export; release savepoint __dbclient_export",
-                "rollback to savepoint __dbclient_export; release savepoint __dbclient_export",
+                "savepoint __boa_export",
+                "rollback to savepoint __boa_export; release savepoint __boa_export",
+                "rollback to savepoint __boa_export; release savepoint __boa_export",
             )
         } else {
             ("begin", "commit", "rollback")
@@ -160,7 +160,7 @@ impl Pg {
 async fn probe_read_only(s: &Session, sql: &str) -> CmdResult<()> {
     s.client
         .batch_execute(&format!(
-            "declare __dbclient_export no scroll cursor for {sql}\n;\nclose __dbclient_export"
+            "declare __boa_export no scroll cursor for {sql}\n;\nclose __boa_export"
         ))
         .await
         .map_err(|e| {
@@ -238,7 +238,7 @@ mod tests {
 
     #[test]
     fn atomic_write_replaces_and_leaves_no_temp() {
-        let dir = std::env::temp_dir().join(format!("dbclient-export-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("boa-export-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let dest = dir.join("x.csv");
         std::fs::write(&dest, "old").unwrap();

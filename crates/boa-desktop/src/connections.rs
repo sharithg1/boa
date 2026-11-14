@@ -172,7 +172,7 @@ mod tests {
         assert_eq!(c.color, None);
         assert_eq!(c.ssl_mode, SslMode::Prefer);
 
-        let dir = std::env::temp_dir().join(format!("dbclient-conn-test-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("boa-conn-test-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let mut config = c.clone();
         config.read_only = true;

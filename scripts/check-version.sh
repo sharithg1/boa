@@ -24,14 +24,14 @@ cargo_version() {
 
 # Top-level "version" of tauri.conf.json (two-space indented key).
 tauri_version() {
-    sed -n 's/^  "version": *"\([^"]*\)".*/\1/p' crates/dbclient-desktop/tauri.conf.json | head -n1
+    sed -n 's/^  "version": *"\([^"]*\)".*/\1/p' crates/boa-desktop/tauri.conf.json | head -n1
 }
 
 cv=$(cargo_version)
 tv=$(tauri_version)
 status=0
 [ -n "$cv" ] || { echo "error: no version in Cargo.toml [workspace.package]" >&2; status=1; }
-[ -n "$tv" ] || { echo "error: no version in crates/dbclient-desktop/tauri.conf.json" >&2; status=1; }
+[ -n "$tv" ] || { echo "error: no version in crates/boa-desktop/tauri.conf.json" >&2; status=1; }
 if [ "$status" = 0 ] && [ "$cv" != "$tv" ]; then
     echo "error: Cargo.toml version $cv != tauri.conf.json version $tv" >&2
     status=1

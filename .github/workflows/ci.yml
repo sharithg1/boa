@@ -60,7 +60,7 @@ jobs:
     runs-on: ubuntu-latest
     defaults:
       run:
-        working-directory: crates/dbclient-desktop/ui
+        working-directory: crates/boa-desktop/ui
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
@@ -70,7 +70,7 @@ jobs:
         with:
           node-version: 24
           cache: pnpm
-          cache-dependency-path: crates/dbclient-desktop/ui/pnpm-lock.yaml
+          cache-dependency-path: crates/boa-desktop/ui/pnpm-lock.yaml
       - run: pnpm install --frozen-lockfile
       - run: pnpm typecheck
       - run: pnpm lint

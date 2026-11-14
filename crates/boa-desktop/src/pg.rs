@@ -493,21 +493,17 @@ impl Pg {
         }
         let run = async {
             s.client
-                .batch_execute(&format!("declare __dbclient no scroll cursor for {sql}"))
+                .batch_execute(&format!("declare __boa no scroll cursor for {sql}"))
                 .await?;
             // Same work on the server as OFFSET, without rewriting the SQL.
             if offset > 0 {
                 s.client
-                    .batch_execute(&format!("move forward {offset} in __dbclient"))
+                    .batch_execute(&format!("move forward {offset} in __boa"))
                     .await?;
             }
-            let mut r = run_simple(
-                s,
-                &format!("fetch forward {} from __dbclient", limit + 1),
-                limit,
-            )
-            .await?;
-            s.client.batch_execute("close __dbclient").await?;
+            let mut r =
+                run_simple(s, &format!("fetch forward {} from __boa", limit + 1), limit).await?;
+            s.client.batch_execute("close __boa").await?;
             r.pageable = true;
             Ok::<_, CmdError>(r)
         };
@@ -649,7 +645,7 @@ mod tests {
 
     /// Against a real server, configured with the libpq variables (PGHOST,
     /// PGPORT, PGUSER, PGPASSWORD, PGDATABASE). Skipped when PGHOST is unset.
-    /// Creates and drops a `dbclient_test` schema.
+    /// Creates and drops a `boa_test` schema.
     #[tokio::test(flavor = "multi_thread")]
     async fn live_postgres() {
         let Ok(host) = std::env::var("PGHOST") else {
@@ -679,14 +675,14 @@ mod tests {
         assert!(info.databases.contains(&db));
 
         let q = |sql: &'static str, limit: usize| pg.query("test", &db, sql, limit, 0);
-        q("drop schema if exists dbclient_test cascade", 10)
+        q("drop schema if exists boa_test cascade", 10)
             .await
             .unwrap();
-        q("create schema dbclient_test", 10).await.unwrap();
-        q(r#"create table dbclient_test."Mixed" (id int primary key, note text, at timestamptz default now())"#, 10)
+        q("create schema boa_test", 10).await.unwrap();
+        q(r#"create table boa_test."Mixed" (id int primary key, note text, at timestamptz default now())"#, 10)
             .await
             .unwrap();
-        let ins = q(r#"insert into dbclient_test."Mixed" (id, note) select g, 'n' || g from generate_series(1, 25) g"#, 10)
+        let ins = q(r#"insert into boa_test."Mixed" (id, note) select g, 'n' || g from generate_series(1, 25) g"#, 10)
             .await
             .unwrap();
         assert_eq!(ins.affected, Some(25));
@@ -694,7 +690,7 @@ mod tests {
 
         // Row cap through the cursor, with types from prepare and text values.
         let r = q(
-            r#"select id, note, null::int as nothing from dbclient_test."Mixed" order by id;"#,
+            r#"select id, note, null::int as nothing from boa_test."Mixed" order by id;"#,
             10,
         )
         .await
@@ -711,7 +707,7 @@ mod tests {
             pg.query(
                 "test",
                 &db,
-                r#"select id from dbclient_test."Mixed" order by id"#,
+                r#"select id from boa_test."Mixed" order by id"#,
                 10,
                 offset,
             )
@@ -726,7 +722,7 @@ mod tests {
 
         // INSERT … RETURNING: not a cursor, still returns rows.
         let r = q(
-            r#"insert into dbclient_test."Mixed" (id) values (100) returning id"#,
+            r#"insert into boa_test."Mixed" (id) values (100) returning id"#,
             10,
         )
         .await
@@ -738,7 +734,7 @@ mod tests {
             pg.query(
                 "test",
                 &db,
-                r#"insert into dbclient_test."Mixed" (id) values (101) returning id"#,
+                r#"insert into boa_test."Mixed" (id) values (101) returning id"#,
                 10,
                 10
             )
@@ -747,7 +743,7 @@ mod tests {
         );
 
         // Server errors carry SQLSTATE and position; the session stays usable.
-        let e = q("select * from dbclient_test.nope", 10).await.unwrap_err();
+        let e = q("select * from boa_test.nope", 10).await.unwrap_err();
         assert_eq!(e.code.as_deref(), Some("42P01"));
         assert_eq!(e.position, Some(15));
         assert_eq!(
@@ -757,9 +753,9 @@ mod tests {
 
         // Explicit transaction: our cursor must not commit it.
         q("begin", 10).await.unwrap();
-        q(r#"delete from dbclient_test."Mixed""#, 10).await.unwrap();
+        q(r#"delete from boa_test."Mixed""#, 10).await.unwrap();
         assert_eq!(
-            q(r#"select count(*) from dbclient_test."Mixed""#, 10)
+            q(r#"select count(*) from boa_test."Mixed""#, 10)
                 .await
                 .unwrap()
                 .rows[0][0]
@@ -768,7 +764,7 @@ mod tests {
         );
         q("rollback", 10).await.unwrap();
         assert_eq!(
-            q(r#"select count(*) from dbclient_test."Mixed""#, 10)
+            q(r#"select count(*) from boa_test."Mixed""#, 10)
                 .await
                 .unwrap()
                 .rows[0][0]
@@ -777,7 +773,7 @@ mod tests {
         );
 
         // CSV export: the whole result streamed to a file, NULL vs '' and quoting.
-        let dir = std::env::temp_dir().join(format!("dbclient-live-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("boa-live-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let dest = dir.join("out.csv");
         let csv = CsvOptions {
@@ -786,7 +782,7 @@ mod tests {
         };
         let export = |sql: &'static str| pg.export_csv("test", &db, sql, &dest, csv, |_| {});
         let r = export(
-            r#"select id, note, case when id = 1 then '' end as e from dbclient_test."Mixed" order by id;"#,
+            r#"select id, note, case when id = 1 then '' end as e from boa_test."Mixed" order by id;"#,
         )
         .await
         .unwrap();
@@ -803,7 +799,7 @@ mod tests {
         );
         // Anything that writes is refused and not run; the file is untouched.
         assert!(
-            export(r#"with x as (insert into dbclient_test."Mixed" (id) values (200) returning id) select * from x"#)
+            export(r#"with x as (insert into boa_test."Mixed" (id) values (200) returning id) select * from x"#)
                 .await
                 .is_err()
         );
@@ -811,16 +807,14 @@ mod tests {
         // Inside a user transaction: sees its uncommitted rows, and a failed
         // export leaves the transaction usable.
         q("begin", 10).await.unwrap();
-        q(r#"insert into dbclient_test."Mixed" (id) values (300)"#, 10)
+        q(r#"insert into boa_test."Mixed" (id) values (300)"#, 10)
             .await
             .unwrap();
-        let r = export(r#"select id from dbclient_test."Mixed""#)
-            .await
-            .unwrap();
+        let r = export(r#"select id from boa_test."Mixed""#).await.unwrap();
         assert_eq!(r.rows, 27);
         assert!(export("select 1 / 0").await.is_err());
         assert_eq!(
-            q(r#"select count(*) from dbclient_test."Mixed""#, 10)
+            q(r#"select count(*) from boa_test."Mixed""#, 10)
                 .await
                 .unwrap()
                 .rows[0][0]
@@ -835,7 +829,7 @@ mod tests {
         // block (25P02 until rollback), COMMIT of an aborted block.
         use crate::tx::TxState;
         assert_eq!(q("begin", 10).await.unwrap().tx, TxState::Active);
-        let e = q("select * from dbclient_test.nope", 10).await.unwrap_err();
+        let e = q("select * from boa_test.nope", 10).await.unwrap_err();
         assert_eq!(e.tx, Some(TxState::Failed));
         let e = q("select 1", 10).await.unwrap_err();
         assert_eq!(e.code.as_deref(), Some("25P02"));
@@ -849,7 +843,7 @@ mod tests {
             pg.set_tx_mode("test", &db, true).await.unwrap(),
             TxState::Idle
         );
-        let r = q(r#"delete from dbclient_test."Mixed" where id > 20"#, 10)
+        let r = q(r#"delete from boa_test."Mixed" where id > 20"#, 10)
             .await
             .unwrap();
         assert_eq!(r.tx, TxState::Active);
@@ -857,7 +851,7 @@ mod tests {
             .query(
                 "test",
                 &db,
-                r#"select id from dbclient_test."Mixed" order by id"#,
+                r#"select id from boa_test."Mixed" order by id"#,
                 5,
                 5,
             )
@@ -868,7 +862,7 @@ mod tests {
         assert_eq!(q("rollback", 10).await.unwrap().tx, TxState::Idle);
         pg.set_tx_mode("test", &db, false).await.unwrap();
         assert_eq!(
-            q(r#"select count(*) from dbclient_test."Mixed""#, 10)
+            q(r#"select count(*) from boa_test."Mixed""#, 10)
                 .await
                 .unwrap()
                 .rows[0][0]
@@ -877,7 +871,7 @@ mod tests {
         );
 
         let schemas = pg
-            .introspect("test", &db, &["dbclient_test".to_owned()])
+            .introspect("test", &db, &["boa_test".to_owned()])
             .await
             .unwrap();
         assert_eq!(schemas.len(), 1);
@@ -885,11 +879,11 @@ mod tests {
             pg.list_schemas("test", &db)
                 .await
                 .unwrap()
-                .contains(&"dbclient_test".to_owned())
+                .contains(&"boa_test".to_owned())
         );
         let t = &schemas
             .iter()
-            .find(|s| s.name == "dbclient_test")
+            .find(|s| s.name == "boa_test")
             .unwrap()
             .tables[0];
         assert_eq!(t.name, "Mixed");
@@ -917,7 +911,7 @@ mod tests {
             pg.query(
                 "test",
                 &db,
-                r#"select count(*) from dbclient_test."Mixed""#,
+                r#"select count(*) from boa_test."Mixed""#,
                 10,
                 0,
             )
@@ -932,9 +926,9 @@ mod tests {
                 "test",
                 &db,
                 &[
-                    st(r#"DELETE FROM dbclient_test."Mixed" WHERE id = '1'"#),
-                    st(r#"UPDATE dbclient_test."Mixed" SET note = E'it''s \\ x' WHERE id = '2'"#),
-                    st(r#"INSERT INTO dbclient_test."Mixed" (id) VALUES ('500')"#),
+                    st(r#"DELETE FROM boa_test."Mixed" WHERE id = '1'"#),
+                    st(r#"UPDATE boa_test."Mixed" SET note = E'it''s \\ x' WHERE id = '2'"#),
+                    st(r#"INSERT INTO boa_test."Mixed" (id) VALUES ('500')"#),
                 ],
             )
             .await
@@ -943,7 +937,7 @@ mod tests {
         assert_eq!(out.runs.len(), 3);
         assert_eq!(count().await, "26");
         let note = pg
-            .query("test", &db, r#"select note, at is not null from dbclient_test."Mixed" where id in (2, 500) order by id"#, 10, 0)
+            .query("test", &db, r#"select note, at is not null from boa_test."Mixed" where id in (2, 500) order by id"#, 10, 0)
             .await
             .unwrap();
         assert_eq!(note.rows[0][0].as_deref(), Some("it's \\ x"));
@@ -954,8 +948,8 @@ mod tests {
                 "test",
                 &db,
                 &[
-                    st(r#"DELETE FROM dbclient_test."Mixed" WHERE id = '3'"#),
-                    st(r#"UPDATE dbclient_test."Mixed" SET note = 'x' WHERE id = '9999'"#),
+                    st(r#"DELETE FROM boa_test."Mixed" WHERE id = '3'"#),
+                    st(r#"UPDATE boa_test."Mixed" SET note = 'x' WHERE id = '9999'"#),
                 ],
             )
             .await
@@ -971,7 +965,7 @@ mod tests {
                 "test",
                 &db,
                 &[
-                    st(r#"INSERT INTO dbclient_test."Mixed" (id) VALUES ('1')"#),
+                    st(r#"INSERT INTO boa_test."Mixed" (id) VALUES ('1')"#),
                     st("select 1/0"),
                 ],
             )
@@ -983,7 +977,7 @@ mod tests {
         pg.apply_edits(
             "test",
             &db,
-            &[st(r#"DELETE FROM dbclient_test."Mixed" WHERE id = '500'"#)],
+            &[st(r#"DELETE FROM boa_test."Mixed" WHERE id = '500'"#)],
         )
         .await
         .unwrap();
@@ -996,7 +990,7 @@ mod tests {
             .apply_edits(
                 "test",
                 &db,
-                &[st(r#"DELETE FROM dbclient_test."Mixed" WHERE id = '500'"#)],
+                &[st(r#"DELETE FROM boa_test."Mixed" WHERE id = '500'"#)],
             )
             .await
             .unwrap();
@@ -1012,7 +1006,7 @@ mod tests {
                 "test",
                 &db,
                 &[st(
-                    r#"UPDATE dbclient_test."Mixed" SET note = 'n2' WHERE id = '2'"#,
+                    r#"UPDATE boa_test."Mixed" SET note = 'n2' WHERE id = '2'"#,
                 )],
             )
             .await
@@ -1022,12 +1016,12 @@ mod tests {
 
         // Disconnecting rolls an open transaction back.
         q("begin", 10).await.unwrap();
-        q(r#"delete from dbclient_test."Mixed""#, 10).await.unwrap();
+        q(r#"delete from boa_test."Mixed""#, 10).await.unwrap();
         pg.disconnect("test").await;
         pg.connect(config.clone(), std::env::var("PGPASSWORD").ok())
             .await
             .unwrap();
-        let count = q(r#"select count(*) from dbclient_test."Mixed""#, 10)
+        let count = q(r#"select count(*) from boa_test."Mixed""#, 10)
             .await
             .unwrap();
         assert_eq!(count.rows[0][0].as_deref(), Some("26"));
@@ -1040,9 +1034,7 @@ mod tests {
         pg.connect(ro, std::env::var("PGPASSWORD").ok())
             .await
             .unwrap();
-        let e = q(r#"delete from dbclient_test."Mixed""#, 10)
-            .await
-            .unwrap_err();
+        let e = q(r#"delete from boa_test."Mixed""#, 10).await.unwrap_err();
         assert_eq!(e.code.as_deref(), Some("25006"));
         assert!(e.hint.is_some());
         let e = q("set default_transaction_read_only = off", 10)
@@ -1052,16 +1044,14 @@ mod tests {
         let e = q("begin read write", 10).await.unwrap_err();
         assert_eq!(e.code.as_deref(), Some("read_only"));
         assert_eq!(e.tx, Some(TxState::Idle));
-        let e = q(r#"delete from dbclient_test."Mixed""#, 10)
-            .await
-            .unwrap_err();
+        let e = q(r#"delete from boa_test."Mixed""#, 10).await.unwrap_err();
         assert_eq!(e.code.as_deref(), Some("25006"));
         pg.disconnect("test").await;
 
         pg.connect(config, std::env::var("PGPASSWORD").ok())
             .await
             .unwrap();
-        q("drop schema dbclient_test cascade", 10).await.unwrap();
+        q("drop schema boa_test cascade", 10).await.unwrap();
         pg.disconnect("test").await;
     }
 }

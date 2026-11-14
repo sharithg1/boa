@@ -14,7 +14,7 @@ on:
     paths:
       - .github/workflows/release.yml
       - scripts/check-version.sh
-      - crates/dbclient-desktop/tauri.conf.json
+      - crates/boa-desktop/tauri.conf.json
   workflow_dispatch:
 
 concurrency:
@@ -103,9 +103,9 @@ jobs:
         with:
           node-version: 24
           cache: pnpm
-          cache-dependency-path: crates/dbclient-desktop/ui/pnpm-lock.yaml
+          cache-dependency-path: crates/boa-desktop/ui/pnpm-lock.yaml
       - run: pnpm install --frozen-lockfile
-        working-directory: crates/dbclient-desktop/ui
+        working-directory: crates/boa-desktop/ui
 
       - name: signing configuration
         env:
@@ -149,7 +149,7 @@ jobs:
           fi
 
       - name: tauri build
-        working-directory: crates/dbclient-desktop/ui
+        working-directory: crates/boa-desktop/ui
         env:
           TARGET: ${{ matrix.target }}
         run: pnpm tauri build --ci --target "$TARGET" --bundles "app,dmg"

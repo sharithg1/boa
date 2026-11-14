@@ -1,4 +1,4 @@
-# Every screen, panel, menu and dialog of the DB client, for shoot.sh / catalog.sh.
+# Every screen, panel, menu and dialog of Boa, for shoot.sh / catalog.sh.
 # `ss NN-name -- description`: keep names numbered and stable so before/after pairs line up.
 toasts off
 

@@ -8,7 +8,7 @@
 #   scripts/release.sh 0.1.5 --allow-branch   # release from a branch other than main
 #
 # Updates: root Cargo.toml ([workspace.package] version, inherited by the
-# desktop crate), crates/dbclient-desktop/tauri.conf.json ("version") and Cargo.lock.
+# desktop crate), crates/boa-desktop/tauri.conf.json ("version") and Cargo.lock.
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
@@ -77,18 +77,18 @@ awk -v v="$version" '
 awk -v v="$version" '
     !done && /^  "version": *"[^"]*"/ { sub(/"version": *"[^"]*"/, "\"version\": \"" v "\""); done = 1 }
     { print }
-' crates/dbclient-desktop/tauri.conf.json > crates/dbclient-desktop/tauri.conf.json.tmp \
-    && mv crates/dbclient-desktop/tauri.conf.json.tmp crates/dbclient-desktop/tauri.conf.json
+' crates/boa-desktop/tauri.conf.json > crates/boa-desktop/tauri.conf.json.tmp \
+    && mv crates/boa-desktop/tauri.conf.json.tmp crates/boa-desktop/tauri.conf.json
 # Cargo.lock: rewrite the workspace members' versions only (no dependency updates).
 cargo update --workspace --offline -q 2>/dev/null || cargo update --workspace -q
 
-undo() { git checkout -q -- Cargo.toml Cargo.lock crates/dbclient-desktop/tauri.conf.json; }
+undo() { git checkout -q -- Cargo.toml Cargo.lock crates/boa-desktop/tauri.conf.json; }
 if ! scripts/check-version.sh "$tag" >/dev/null; then
     undo
     die "version bump did not apply cleanly; reverted"
 fi
 git --no-pager diff --stat
-git --no-pager diff -U0 -- Cargo.toml crates/dbclient-desktop/tauri.conf.json
+git --no-pager diff -U0 -- Cargo.toml crates/boa-desktop/tauri.conf.json
 
 if [ "$dry_run" = 1 ]; then
     undo
@@ -98,7 +98,7 @@ if [ "$dry_run" = 1 ]; then
 fi
 
 # --- commit + tag --------------------------------------------------------------
-git add Cargo.toml Cargo.lock crates/dbclient-desktop/tauri.conf.json
+git add Cargo.toml Cargo.lock crates/boa-desktop/tauri.conf.json
 git commit -q -m "Release $tag"
 git tag -a "$tag" -m "Release $tag"
 echo

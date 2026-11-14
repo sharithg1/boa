@@ -139,6 +139,18 @@ function save() {
 }
 
 let started = false
+let timer: ReturnType<typeof setTimeout> | undefined
+
+/**
+ * Writes a pending save now. The app's quit path calls it: the process can
+ * exit before the page gets `pagehide`.
+ */
+export function flushSession() {
+  if (timer === undefined) return
+  clearTimeout(timer)
+  timer = undefined
+  save()
+}
 
 /**
  * Restores the last session (call once the connections are loaded),
@@ -171,21 +183,14 @@ export function startSession() {
       })
   }
 
-  let timer: ReturnType<typeof setTimeout> | undefined
-  const flush = () => {
-    if (timer === undefined) return
-    clearTimeout(timer)
-    timer = undefined
-    save()
-  }
   useStore.subscribe((s, prev) => {
     const a = pick(s)
     const b = pick(prev)
     if ((Object.keys(a) as (keyof SessionState)[]).every((k) => a[k] === b[k])) return
     clearTimeout(timer)
-    timer = setTimeout(flush, SAVE_DELAY_MS)
+    timer = setTimeout(flushSession, SAVE_DELAY_MS)
   })
   // Quit or reload within the delay: write what is pending.
-  window.addEventListener('pagehide', flush)
-  window.addEventListener('beforeunload', flush)
+  window.addEventListener('pagehide', flushSession)
+  window.addEventListener('beforeunload', flushSession)
 }

@@ -13,8 +13,7 @@ import {
   Play,
   RefreshCw,
   Search,
-  Square,
-  Undo2
+  Square
 } from 'lucide-react'
 import {
   cancelQuery,
@@ -54,6 +53,8 @@ import { SqlHighlight, type EditorMark } from './SqlHighlight'
 import { CompletionPopup, caretBox, charWidth } from './CompletionPopup'
 import { StatementChooser } from './StatementChooser'
 import { complete, type CompletionResult } from '@/lib/complete'
+import { TxControls } from './TxControls'
+import { ConnectionStripe } from './ConnectionTag'
 
 export function Workspace() {
   const active = useStore((s) => s.active)
@@ -75,6 +76,7 @@ export function Workspace() {
   const tab = ws?.tabs.find((t) => t.id === ws?.activeTab)
   return (
     <main className="flex min-h-0 min-w-0 flex-1 flex-col bg-background">
+      <ConnectionStripe connectionId={active.connectionId} />
       <div className="relative flex min-h-0 flex-1 flex-col">
         {tab?.kind === 'query' ? (
           <QueryView
@@ -141,7 +143,6 @@ function QueryView({
     s.connections[connectionId]?.databases.find((d) => d.name === database)
   )
   const [schema, setSchema] = useState(db?.schemas[0]?.name ?? '')
-  const [manualTx, setManualTx] = useState(false)
   const area = useRef<HTMLTextAreaElement>(null)
   const gutter = useRef<HTMLDivElement>(null)
   const layer = useRef<HTMLPreElement>(null)
@@ -288,42 +289,12 @@ function QueryView({
           <History className="size-3.5" />
         </IconButton>
         <Sep />
-        <DropdownMenu>
-          <DropdownMenuTrigger className={TOOL_BTN}>
-            Tx: {manualTx ? 'Manual' : 'Auto'}
-            <ChevronDown className="size-3" />
-          </DropdownMenuTrigger>
-          <DropdownMenuContent align="start" className="w-44">
-            <DropdownMenuItem onSelect={() => setManualTx(false)}>
-              {!manualTx ? <Check /> : <span className="size-4" />}
-              Auto-commit
-            </DropdownMenuItem>
-            <DropdownMenuItem onSelect={() => setManualTx(true)}>
-              {manualTx ? <Check /> : <span className="size-4" />}
-              Manual
-            </DropdownMenuItem>
-          </DropdownMenuContent>
-        </DropdownMenu>
-        {manualTx && (
-          <>
-            <IconButton
-              label="Commit"
-              side="bottom"
-              disabled={!connected}
-              onClick={() => exec('COMMIT')}
-            >
-              <Check className="size-3.5" />
-            </IconButton>
-            <IconButton
-              label="Rollback"
-              side="bottom"
-              disabled={!connected}
-              onClick={() => exec('ROLLBACK')}
-            >
-              <Undo2 className="size-3.5" />
-            </IconButton>
-          </>
-        )}
+        <TxControls
+          connectionId={connectionId}
+          database={database}
+          tabId={tab.id}
+          title={tab.title}
+        />
         {running && <span className="ml-2 text-xs text-dim">Executing…</span>}
         <span className="flex-1" />
         <DropdownMenu>

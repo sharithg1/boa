@@ -23,6 +23,8 @@ const COMMANDS: &[&str] = &[
     "history_append",
     "history_delete",
     "history_clear",
+    "set_tx_mode",
+    "quit",
 ];
 
 fn main() {

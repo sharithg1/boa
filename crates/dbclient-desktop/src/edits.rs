@@ -1,13 +1,15 @@
 //! Submitting grid edits: the statements the data editor generated (one
 //! `UPDATE` / `INSERT` / `DELETE` per changed row) run as one unit. Outside
 //! a user transaction they get their own `BEGIN … COMMIT`; inside one
-//! (`Session.in_tx`) they run under a savepoint, so a failure undoes only
-//! them and leaves the user's transaction usable. Any error, or a statement
-//! that must hit exactly one row and doesn't, rolls everything back.
+//! (`Session.tx`) they run under a savepoint, so a failure undoes only
+//! them and leaves the user's transaction usable. In Manual mode a
+//! transaction is opened first, as for a typed statement, so the edits stay
+//! uncommitted until Commit. Any error, or a statement that must hit exactly
+//! one row and doesn't, rolls everything back.
 
 use crate::error::{CmdError, CmdResult};
+use crate::tx::{self, TxCell, TxState};
 use serde::{Deserialize, Serialize};
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Instant;
 use tokio_postgres::Client;
 
@@ -45,6 +47,8 @@ pub struct ApplyOutcome {
     pub failed: Option<ApplyFailure>,
     /// Ran inside the user's open transaction (not committed yet).
     pub in_transaction: bool,
+    /// The session's transaction state afterwards.
+    pub tx: TxState,
     pub ms: u64,
 }
 
@@ -105,20 +109,40 @@ fn ms_since(t: Instant) -> u64 {
     u64::try_from(t.elapsed().as_millis()).unwrap_or(u64::MAX)
 }
 
-/// Runs `statements` as one unit on `client` (see the module docs).
+/// Runs `statements` as one unit on `client` (see the module docs); `tx`
+/// is the session's transaction state, re-probed afterwards.
 pub async fn apply(
     client: &Client,
-    in_tx: &AtomicBool,
+    tx: &TxCell,
+    manual: bool,
+    statements: &[EditStatement],
+) -> CmdResult<ApplyOutcome> {
+    let res = run(client, tx, manual, statements).await;
+    tx.set(tx::probe(client).await.state);
+    res.map(|out| ApplyOutcome {
+        tx: tx.get(),
+        ..out
+    })
+}
+
+async fn run(
+    client: &Client,
+    tx: &TxCell,
+    manual: bool,
     statements: &[EditStatement],
 ) -> CmdResult<ApplyOutcome> {
     let started = Instant::now();
-    let user_tx = in_tx.load(Ordering::Relaxed);
+    if manual && tx.get() == TxState::Idle {
+        client.batch_execute("begin").await?;
+        tx.set(TxState::Active);
+    }
+    let user_tx = tx.get() != TxState::Idle;
     let p = plan(user_tx);
     client.batch_execute(&p.open).await?;
     // While our own transaction is open, other tabs' reads on this session
     // must not BEGIN/COMMIT around their cursor (that would commit us early).
     if !user_tx {
-        in_tx.store(true, Ordering::Relaxed);
+        tx.set(TxState::Active);
     }
     let mut runs = Vec::with_capacity(statements.len());
     let mut failed = None;
@@ -141,9 +165,6 @@ pub async fn apply(
     }
     let end = if failed.is_some() { &p.undo } else { &p.keep };
     let ended = client.batch_execute(end).await;
-    if !user_tx {
-        in_tx.store(false, Ordering::Relaxed);
-    }
     if let Err(e) = ended {
         // Couldn't commit (e.g. a deferred constraint): nothing was applied.
         if failed.is_none() {
@@ -160,6 +181,7 @@ pub async fn apply(
         runs,
         failed,
         in_transaction: user_tx,
+        tx: TxState::Idle, // filled in by `apply`
         ms: ms_since(started),
     })
 }

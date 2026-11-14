@@ -3,6 +3,7 @@ import { BottomPanel } from './components/BottomPanel'
 import { CommandPalette } from './components/CommandPalette'
 import { ConnectionDialog, PasswordPrompt } from './components/ConnectionDialog'
 import { QueryHistory } from './components/QueryHistory'
+import { GuardRails } from './components/GuardDialogs'
 import { RightPanel } from './components/RightPanel'
 import { SettingsView } from './components/SettingsView'
 import { Sidebar, newQueryTarget } from './components/Sidebar'
@@ -57,6 +58,7 @@ export function App() {
       <ConnectionDialog />
       <PasswordPrompt />
       <DiscardEditsDialog />
+      <GuardRails />
       <Toasts />
     </div>
   )

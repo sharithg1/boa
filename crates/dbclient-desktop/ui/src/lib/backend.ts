@@ -8,10 +8,11 @@ import { invoke, isTauri } from '@tauri-apps/api/core'
 import { execute } from '@/state/mockData'
 import { sampleConnections } from '@/state/mock'
 import { type ExportBackend, mockExport, tauriExport } from './exportBackend'
-import type { ResultColumn, Schema } from '@/state/types'
 import type { EditStatement } from './gridEdits'
 import { applyMockEdits } from '@/state/mockEdits'
 import { localHistoryStore, type HistoryRecord } from './history'
+import type { Environment, ResultColumn, Schema } from '@/state/types'
+import { trackTx, type TxState } from '@/state/tx'
 
 export type SslMode = 'disable' | 'prefer' | 'require' | 'verify-full'
 
@@ -25,6 +26,11 @@ export type ConnConfig = {
   /** Database connected to first; the others are listed from it. */
   database: string
   sslMode: SslMode
+  /** Sessions run with `default_transaction_read_only = on`. */
+  readOnly: boolean
+  environment?: Environment
+  /** Palette colour name (lib/connTag.ts). */
+  color?: string
 }
 
 export type SavedConnection = ConnConfig & { hasPassword: boolean }
@@ -41,6 +47,8 @@ export type QueryResult = {
   /** Read-only statement: other pages can be fetched by re-running it with an offset. */
   pageable: boolean
   ms: number
+  /** The session's transaction state after the statement. */
+  tx?: TxState
 }
 
 /** What every backend call rejects with (Postgres details when the server raised it). */
@@ -52,6 +60,8 @@ export type BackendError = {
   position?: number
   detail?: string
   hint?: string
+  /** The session's transaction state after a failed statement. */
+  tx?: TxState
 }
 
 export function toBackendError(e: unknown): BackendError {
@@ -67,6 +77,8 @@ export type ApplyOutcome = {
   failed: { index: number; error: BackendError } | null
   /** Ran inside the user's open transaction (under a savepoint, not committed). */
   inTransaction: boolean
+  /** The session's transaction state afterwards (Manual mode opens one). */
+  tx?: TxState
   ms: number
 }
 
@@ -94,6 +106,8 @@ export type Backend = {
     offset?: number
   ): Promise<QueryResult>
   cancelQuery(id: string, database: string): Promise<void>
+  /** Manual (a transaction opens before the first statement) or Auto commit; resolves to the state. */
+  setTxMode(id: string, database: string, manual: boolean): Promise<TxState>
   /** The connection's saved query history, oldest first. */
   historyList(id: string): Promise<HistoryRecord[]>
   historyAppend(id: string, entry: HistoryRecord): Promise<void>
@@ -125,7 +139,8 @@ const tauriBackend: Backend = {
   historyList: (id) => invoke('history_list', { id }),
   historyAppend: (id, entry) => invoke('history_append', { id, entry }),
   historyDelete: (id, ids) => invoke('history_delete', { id, ids }),
-  historyClear: (id) => invoke('history_clear', { id })
+  historyClear: (id) => invoke('history_clear', { id }),
+  setTxMode: (id, database, manual) => invoke('set_tx_mode', { id, database, manual })
 }
 
 // ── In-browser mock ───────────────────────────────────────────────────────
@@ -145,7 +160,10 @@ function mockBackend(): Backend {
         user: c.user ?? 'postgres',
         database: c.databases[0]?.name ?? 'postgres',
         sslMode: 'prefer',
-        hasPassword: true
+        hasPassword: true,
+        readOnly: false,
+        // Tagged so the browser preview shows the production guard rails.
+        environment: c.id === 'prod-pg' ? ('production' as const) : undefined
       }
     ])
   )
@@ -153,6 +171,14 @@ function mockBackend(): Backend {
     samples.find((c) => c.id === id)?.databases.find((d) => d.name === database)
   const cancelled = new Set<string>()
   const history = localHistoryStore(typeof localStorage === 'undefined' ? undefined : localStorage)
+  // Simplified transactions: begin / commit / rollback by first keyword,
+  // Manual mode, aborted blocks (25P02) and read-only connections (25006).
+  const sessions = new Map<string, { manual: boolean; tx: TxState }>()
+  const session = (key: string) => {
+    let s = sessions.get(key)
+    if (!s) sessions.set(key, (s = { manual: false, tx: 'idle' }))
+    return s
+  }
   return {
     real: false,
     listConnections: async () => [...saved.values()],
@@ -181,7 +207,9 @@ function mockBackend(): Backend {
         databases: sample.databases.map((d) => d.name)
       }
     },
-    disconnect: async () => {},
+    disconnect: async (id) => {
+      for (const k of sessions.keys()) if (k.startsWith(`${id}\u0000`)) sessions.delete(k)
+    },
     listSchemas: async (id, database) => {
       await sleep(80)
       return dbOf(id, database)?.schemas.map((s) => s.name) ?? []
@@ -195,13 +223,44 @@ function mockBackend(): Backend {
       cancelled.delete(key)
       const ms = 20 + Math.round(Math.random() * 400)
       await sleep(ms)
+      const s = session(key)
+      const fail = (e: BackendError): never => {
+        if (s.tx !== 'idle') s.tx = 'failed'
+        throw { ...e, tx: s.tx }
+      }
       if (cancelled.has(key))
-        throw { message: 'canceling statement due to user request', code: '57014' }
+        fail({ message: 'canceling statement due to user request', code: '57014' })
+      const kw = /^[\s(]*([a-z]+)/i.exec(sql.replace(/^\s*--.*$/gm, ''))?.[1]?.toLowerCase() ?? ''
+      const done = { columns: [], rows: [], affected: 0, truncated: false, pageable: false, ms }
+      if (['commit', 'end', 'rollback', 'abort'].includes(kw)) {
+        s.tx = 'idle'
+        return { ...done, tx: s.tx }
+      }
+      if (s.tx === 'failed')
+        fail({
+          message:
+            'current transaction is aborted, commands ignored until end of transaction block',
+          code: '25P02'
+        })
+      if (kw === 'begin' || kw === 'start') {
+        s.tx = 'active'
+        return { ...done, tx: s.tx }
+      }
+      if (s.manual && s.tx === 'idle' && !offset) s.tx = 'active'
+      if (
+        saved.get(id)?.readOnly &&
+        /^(insert|update|delete|merge|create|drop|alter|truncate)$/.test(kw)
+      )
+        fail({
+          message: `cannot execute ${kw.toUpperCase()} in a read-only transaction`,
+          code: '25006',
+          hint: 'The connection is read-only (data source settings).'
+        })
       const res = execute(dbOf(id, database), sql, limit, offset)
-      if (res.kind === 'error') throw { message: res.message, code: '42P01' }
+      if (res.kind === 'error') return fail({ message: res.message, code: '42P01' })
       if (res.kind === 'affected') {
-        if (offset) throw { message: "This statement can't be paged" }
-        return { columns: [], rows: [], affected: res.count, truncated: false, pageable: false, ms }
+        if (offset) throw { message: "This statement can't be paged", tx: s.tx }
+        return { ...done, affected: res.count, tx: s.tx }
       }
       return {
         columns: res.columns,
@@ -209,7 +268,8 @@ function mockBackend(): Backend {
         affected: res.rows.length,
         truncated: res.truncated ?? false,
         pageable: true,
-        ms
+        ms,
+        tx: s.tx
       }
     },
     cancelQuery: async (id, database) => {
@@ -218,13 +278,37 @@ function mockBackend(): Backend {
     ...mockExport(dbOf, cancelled),
     applyEdits: async (id, database, statements) => {
       await sleep(150)
-      return applyMockEdits(dbOf(id, database), statements)
+      const s = session(`${id}\u0000${database}`)
+      if (s.tx === 'failed')
+        return {
+          runs: [],
+          failed: {
+            index: 0,
+            error: {
+              code: '25P02',
+              message:
+                'current transaction is aborted, commands ignored until end of transaction block'
+            }
+          },
+          inTransaction: true,
+          tx: s.tx,
+          ms: 0
+        }
+      // Manual mode opens a transaction first, as a typed statement would.
+      if (s.manual && s.tx === 'idle') s.tx = 'active'
+      const out = applyMockEdits(dbOf(id, database), statements)
+      return { ...out, inTransaction: s.tx === 'active', tx: s.tx }
     },
     historyList: async (id) => history.list(id),
     historyAppend: async (id, entry) => history.append(id, entry),
     historyDelete: async (id, ids) => history.remove(id, ids),
-    historyClear: async (id) => history.clear(id)
+    historyClear: async (id) => history.clear(id),
+    setTxMode: async (id, database, manual) => {
+      const s = session(`${id}\u0000${database}`)
+      s.manual = manual
+      return s.tx
+    }
   }
 }
 
-export const backend: Backend = isTauri() ? tauriBackend : mockBackend()
+export const backend: Backend = trackTx(isTauri() ? tauriBackend : mockBackend())

@@ -32,6 +32,25 @@ pub struct ConnConfig {
     pub database: String,
     #[serde(default)]
     pub ssl_mode: SslMode,
+    /// Sessions run with `default_transaction_read_only = on`.
+    #[serde(default)]
+    pub read_only: bool,
+    /// Environment tag; `production` always confirms destructive statements.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub environment: Option<Environment>,
+    /// Colour shown wherever the connection is used (a palette name such as
+    /// `red`); unset: the environment's colour.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub color: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum Environment {
+    Development,
+    Test,
+    Staging,
+    Production,
 }
 
 /// A connection as the explorer lists it.
@@ -134,4 +153,42 @@ pub fn get(dir: &Path, id: &str) -> CmdResult<Option<(ConnConfig, Option<String>
 
 pub fn password(dir: &Path, id: &str) -> CmdResult<Option<String>> {
     Ok(get(dir, id)?.and_then(|(_, p)| p))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Environment, SslMode, Stored, get, list, upsert};
+
+    #[test]
+    fn old_files_load_and_new_fields_round_trip() {
+        // A file written before read-only / environment / colour existed.
+        let old: Vec<Stored> = serde_json::from_str(
+            r#"[{"id":"a","name":"A","host":"h","port":5432,"user":"u","database":"d","password":"p"}]"#,
+        )
+        .unwrap();
+        let c = &old[0].config;
+        assert!(!c.read_only);
+        assert_eq!(c.environment, None);
+        assert_eq!(c.color, None);
+        assert_eq!(c.ssl_mode, SslMode::Prefer);
+
+        let dir = std::env::temp_dir().join(format!("dbclient-conn-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let mut config = c.clone();
+        config.read_only = true;
+        config.environment = Some(Environment::Production);
+        config.color = Some("red".into());
+        upsert(&dir, config, Some("p".into()), true).unwrap();
+        let (back, pw) = get(&dir, "a").unwrap().unwrap();
+        assert!(back.read_only);
+        assert_eq!(back.environment, Some(Environment::Production));
+        assert_eq!(back.color.as_deref(), Some("red"));
+        assert_eq!(pw.as_deref(), Some("p"));
+        let json = String::from_utf8(std::fs::read(dir.join("connections.json")).unwrap()).unwrap();
+        assert!(
+            json.contains("\"readOnly\": true") && json.contains("\"environment\": \"production\"")
+        );
+        assert!(list(&dir).unwrap()[0].has_password);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
 }

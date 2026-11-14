@@ -77,7 +77,7 @@ const SECTIONS: { title: string; rows: Row[] }[] = [
         id: 'confirmDestructive',
         kind: 'switch',
         label: 'Confirm destructive statements',
-        desc: 'Ask before running UPDATE or DELETE without a WHERE clause, DROP or TRUNCATE.'
+        desc: 'Ask before running UPDATE or DELETE without a WHERE clause, DROP, TRUNCATE or DROP COLUMN. Connections tagged Production always ask.'
       },
       {
         id: 'recordHistory',

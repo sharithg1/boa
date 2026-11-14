@@ -5,7 +5,7 @@
 //!
 //! The statement runs on the database's shared session:
 //! - outside a user transaction, in its own `begin … commit`;
-//! - inside one (`Session.in_tx`), under a savepoint that is always rolled
+//! - inside one (`Session.tx` not idle), under a savepoint that is always rolled
 //!   back, so an error or a cancel (`cancel_query`) leaves the user's
 //!   transaction as it was, and uncommitted rows are exported as shown.
 //!
@@ -17,11 +17,11 @@
 
 use super::{Pg, Session};
 use crate::error::{CmdError, CmdResult};
+use crate::tx::TxState;
 use futures_util::{StreamExt, pin_mut};
 use serde::{Deserialize, Serialize};
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
 
 #[derive(Debug, Clone, Copy, Deserialize)]
@@ -107,7 +107,7 @@ impl Pg {
         let file = std::fs::File::create(&tmp)?;
         let mut out = std::io::BufWriter::with_capacity(256 * 1024, file);
 
-        let user_tx = s.in_tx.load(Ordering::Relaxed);
+        let user_tx = s.tx.get() != TxState::Idle;
         let (open, ok, err) = if user_tx {
             (
                 "savepoint __dbclient_export",

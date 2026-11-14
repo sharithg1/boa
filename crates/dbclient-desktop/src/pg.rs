@@ -11,6 +11,7 @@
 
 use crate::connections::{ConnConfig, SslMode};
 use crate::error::{CmdError, CmdResult};
+use crate::tx::{self, TxCell, TxState};
 use postgres_native_tls::MakeTlsConnector;
 use serde::Serialize;
 use std::collections::HashMap;
@@ -27,8 +28,13 @@ struct Session {
     client: Client,
     cancel: CancelToken,
     tls: MakeTlsConnector,
-    /// Inside an explicit BEGIN … COMMIT: don't wrap the cursor in our own transaction.
-    in_tx: AtomicBool,
+    /// Transaction state after the last statement (probed from the server):
+    /// inside a block, the cursor doesn't open its own transaction.
+    tx: TxCell,
+    /// Manual transaction mode: a BEGIN is sent before the first statement.
+    manual: AtomicBool,
+    /// Opened with `default_transaction_read_only = on`.
+    read_only: bool,
 }
 
 struct Open {
@@ -78,6 +84,9 @@ async fn open_session(
     if let Some(p) = password {
         c.password(p);
     }
+    if config.read_only {
+        c.options("-c default_transaction_read_only=on");
+    }
     let tls = tls(config.ssl_mode)?;
     let (client, connection) = c.connect(tls.clone()).await?;
     let label = format!("{}/{database}", config.name);
@@ -90,7 +99,9 @@ async fn open_session(
         cancel: client.cancel_token(),
         client,
         tls,
-        in_tx: AtomicBool::new(false),
+        tx: TxCell::default(),
+        manual: AtomicBool::new(false),
+        read_only: config.read_only,
     })
 }
 
@@ -153,6 +164,8 @@ pub struct QueryResult {
     /// never be re-run.
     pub pageable: bool,
     pub ms: u64,
+    /// Transaction state after the statement.
+    pub tx: TxState,
 }
 
 const SERVER_VERSION: &str = "select 'PostgreSQL ' || current_setting('server_version')";
@@ -246,18 +259,46 @@ impl Pg {
 
     pub async fn disconnect(&self, id: &str) {
         self.open.lock().await.remove(id);
+        let mut gone = Vec::new();
+        self.sessions.lock().await.retain(|(cid, _), s| {
+            if cid == id {
+                gone.push(s.clone());
+            }
+            cid != id
+        });
+        // Roll open transactions back explicitly (the server would anyway
+        // once the connection closes), without waiting on a busy session.
+        for s in gone {
+            if s.tx.get() != TxState::Idle {
+                let _ = tokio::time::timeout(
+                    Duration::from_secs(2),
+                    s.client.batch_execute("rollback"),
+                )
+                .await;
+            }
+        }
         // Dropping the clients closes their connections.
-        self.sessions.lock().await.retain(|(cid, _), _| cid != id);
+    }
+
+    /// Switches the session to Manual (`true`) or Auto transaction mode.
+    /// An open transaction is left as it is.
+    pub async fn set_tx_mode(&self, id: &str, database: &str, manual: bool) -> CmdResult<TxState> {
+        let s = self.session(id, database).await?;
+        s.manual.store(manual, Ordering::Relaxed);
+        Ok(s.tx.get())
     }
 
     async fn session(&self, id: &str, database: &str) -> CmdResult<Arc<Session>> {
         let key = (id.to_owned(), database.to_owned());
         // Held across the connect so two callers don't open the same session twice.
         let mut sessions = self.sessions.lock().await;
+        let mut manual = false;
         if let Some(s) = sessions.get(&key) {
             if !s.client.is_closed() {
                 return Ok(s.clone());
             }
+            // Reopened after the connection dropped: same mode, no transaction.
+            manual = s.manual.load(Ordering::Relaxed);
         }
         let open = self
             .open
@@ -267,6 +308,7 @@ impl Pg {
             .cloned()
             .ok_or_else(|| CmdError::code("not_connected", "Not connected"))?;
         let s = Arc::new(open_session(&open.config, open.password.as_deref(), database).await?);
+        s.manual.store(manual, Ordering::Relaxed);
         sessions.insert(key, s.clone());
         Ok(s)
     }
@@ -341,6 +383,8 @@ impl Pg {
 
     /// Runs one statement; row-returning ones return `limit` rows starting
     /// after the first `offset`. Only pageable statements accept an offset.
+    /// In Manual mode a transaction is opened first; either way the result
+    /// (or error) carries the transaction state the server is left in.
     pub async fn query(
         &self,
         id: &str,
@@ -350,6 +394,47 @@ impl Pg {
         offset: usize,
     ) -> CmdResult<QueryResult> {
         let s = self.session(id, database).await?;
+        let text = sql.trim().trim_end_matches(';').trim_end();
+        if s.manual.load(Ordering::Relaxed)
+            && s.tx.get() == TxState::Idle
+            && offset == 0
+            && !text.is_empty()
+            && tx::opens_tx(&leading_keyword(text), text)
+        {
+            s.client.batch_execute("begin").await?;
+            s.tx.set(TxState::Active);
+        }
+        let run = self.execute(&s, sql, limit, offset).await;
+        let probe = tx::probe(&s.client).await;
+        s.tx.set(probe.state);
+        let reverted = if s.read_only && probe.writable {
+            Some(restore_read_only(&s).await)
+        } else {
+            None
+        };
+        match (run, reverted) {
+            (Ok(_), Some(e)) => Err(e),
+            (Ok(mut r), None) => {
+                r.tx = s.tx.get();
+                Ok(r)
+            }
+            (Err(mut e), _) => {
+                if s.read_only && e.code.as_deref() == Some("25006") {
+                    e.hint = Some("The connection is read-only (data source settings).".into());
+                }
+                e.tx = Some(s.tx.get());
+                Err(e)
+            }
+        }
+    }
+
+    async fn execute(
+        &self,
+        s: &Session,
+        sql: &str,
+        limit: usize,
+        offset: usize,
+    ) -> CmdResult<QueryResult> {
         let started = Instant::now();
         let sql = sql.trim().trim_end_matches(';').trim_end();
         if sql.is_empty() {
@@ -372,25 +457,19 @@ impl Pg {
             && typed.as_ref().is_some_and(|c| !c.is_empty());
 
         let mut result = if cursorable {
-            match self.fetch_with_cursor(&s, sql, limit, offset).await {
+            match self.fetch_with_cursor(s, sql, limit, offset).await {
                 Ok(r) => r,
                 // `WITH … INSERT` can't be a cursor (0A000): run it plainly,
                 // but never re-run it for another page.
                 Err(e) if e.code.as_deref() == Some("0A000") && offset == 0 => {
-                    run_simple(&s, sql, limit).await?
+                    run_simple(s, sql, limit).await?
                 }
                 Err(e) => return Err(e),
             }
         } else if offset > 0 {
             return Err(CmdError::msg("This statement can't be paged"));
         } else {
-            let r = run_simple(&s, sql, limit).await?;
-            match kw.as_str() {
-                "begin" | "start" => s.in_tx.store(true, Ordering::Relaxed),
-                "commit" | "end" | "rollback" | "abort" => s.in_tx.store(false, Ordering::Relaxed),
-                _ => {}
-            }
-            r
+            run_simple(s, sql, limit).await?
         };
         if let Some(typed) = typed {
             if typed.len() == result.columns.len() {
@@ -408,7 +487,7 @@ impl Pg {
         limit: usize,
         offset: usize,
     ) -> CmdResult<QueryResult> {
-        let own_tx = !s.in_tx.load(Ordering::Relaxed);
+        let own_tx = s.tx.get() == TxState::Idle;
         if own_tx {
             s.client.batch_execute("begin").await?;
         }
@@ -458,7 +537,13 @@ impl Pg {
         statements: &[crate::edits::EditStatement],
     ) -> CmdResult<crate::edits::ApplyOutcome> {
         let s = self.session(id, database).await?;
-        crate::edits::apply(&s.client, &s.in_tx, statements).await
+        let manual = s.manual.load(Ordering::Relaxed);
+        crate::edits::apply(&s.client, &s.tx, manual, statements)
+            .await
+            .map_err(|mut e| {
+                e.tx = Some(s.tx.get());
+                e
+            })
     }
 
     pub async fn cancel(&self, id: &str, database: &str) -> CmdResult<()> {
@@ -516,7 +601,34 @@ async fn run_simple(s: &Session, sql: &str, limit: usize) -> CmdResult<QueryResu
         truncated,
         pageable: false,
         ms: 0,
+        tx: TxState::Idle,
     })
+}
+
+/// A read-only session ended up able to write: roll back the read-write
+/// transaction, if any, and turn the default back on.
+async fn restore_read_only(s: &Session) -> CmdError {
+    let rolled_back = s.tx.get() != TxState::Idle;
+    if rolled_back {
+        let _ = s.client.batch_execute("rollback").await;
+    }
+    let _ = s
+        .client
+        .batch_execute("set default_transaction_read_only = on")
+        .await;
+    s.tx.set(tx::probe(&s.client).await.state);
+    CmdError {
+        tx: Some(s.tx.get()),
+        hint: Some("Turn read-only off in the data source settings to write.".into()),
+        ..CmdError::code(
+            "read_only",
+            if rolled_back {
+                "The connection is read-only: the read-write transaction was rolled back"
+            } else {
+                "The connection is read-only: read-write mode was turned back off"
+            },
+        )
+    }
 }
 
 #[cfg(test)]
@@ -553,11 +665,14 @@ mod tests {
             user: env("PGUSER", "postgres"),
             database: env("PGDATABASE", "postgres"),
             ssl_mode: SslMode::Prefer,
+            read_only: false,
+            environment: None,
+            color: None,
         };
         let db = config.database.clone();
         let pg = Pg::default();
         let info = pg
-            .connect(config, std::env::var("PGPASSWORD").ok())
+            .connect(config.clone(), std::env::var("PGPASSWORD").ok())
             .await
             .unwrap();
         assert!(info.server_version.starts_with("PostgreSQL"));
@@ -716,6 +831,51 @@ mod tests {
         assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 1);
         std::fs::remove_dir_all(&dir).unwrap();
 
+        // The state comes from the server: typed BEGIN, an error inside the
+        // block (25P02 until rollback), COMMIT of an aborted block.
+        use crate::tx::TxState;
+        assert_eq!(q("begin", 10).await.unwrap().tx, TxState::Active);
+        let e = q("select * from dbclient_test.nope", 10).await.unwrap_err();
+        assert_eq!(e.tx, Some(TxState::Failed));
+        let e = q("select 1", 10).await.unwrap_err();
+        assert_eq!(e.code.as_deref(), Some("25P02"));
+        assert_eq!(e.tx, Some(TxState::Failed));
+        assert_eq!(q("commit", 10).await.unwrap().tx, TxState::Idle);
+        assert_eq!(q("select 1", 10).await.unwrap().tx, TxState::Idle);
+
+        // Manual mode: the first statement opens a transaction, pages of a
+        // cursor run inside it, and ROLLBACK undoes the work.
+        assert_eq!(
+            pg.set_tx_mode("test", &db, true).await.unwrap(),
+            TxState::Idle
+        );
+        let r = q(r#"delete from dbclient_test."Mixed" where id > 20"#, 10)
+            .await
+            .unwrap();
+        assert_eq!(r.tx, TxState::Active);
+        let p = pg
+            .query(
+                "test",
+                &db,
+                r#"select id from dbclient_test."Mixed" order by id"#,
+                5,
+                5,
+            )
+            .await
+            .unwrap();
+        assert_eq!(p.rows.len(), 5);
+        assert_eq!(p.tx, TxState::Active);
+        assert_eq!(q("rollback", 10).await.unwrap().tx, TxState::Idle);
+        pg.set_tx_mode("test", &db, false).await.unwrap();
+        assert_eq!(
+            q(r#"select count(*) from dbclient_test."Mixed""#, 10)
+                .await
+                .unwrap()
+                .rows[0][0]
+                .as_deref(),
+            Some("26")
+        );
+
         let schemas = pg
             .introspect("test", &db, &["dbclient_test".to_owned()])
             .await
@@ -830,7 +990,77 @@ mod tests {
         assert_eq!(count().await, "25");
         q("rollback", 10).await.unwrap();
         assert_eq!(count().await, "26");
+        // Manual mode: submitting opens the transaction and leaves it open.
+        pg.set_tx_mode("test", &db, true).await.unwrap();
+        let out = pg
+            .apply_edits(
+                "test",
+                &db,
+                &[st(r#"DELETE FROM dbclient_test."Mixed" WHERE id = '500'"#)],
+            )
+            .await
+            .unwrap();
+        assert!(out.failed.is_none() && out.in_transaction);
+        assert_eq!(out.tx, TxState::Active);
+        assert_eq!(count().await, "25");
+        assert_eq!(q("rollback", 10).await.unwrap().tx, TxState::Idle);
+        assert_eq!(count().await, "26");
+        pg.set_tx_mode("test", &db, false).await.unwrap();
+        // Auto mode, no transaction: committed, and the session is idle again.
+        let out = pg
+            .apply_edits(
+                "test",
+                &db,
+                &[st(
+                    r#"UPDATE dbclient_test."Mixed" SET note = 'n2' WHERE id = '2'"#,
+                )],
+            )
+            .await
+            .unwrap();
+        assert!(!out.in_transaction);
+        assert_eq!(out.tx, TxState::Idle);
 
+        // Disconnecting rolls an open transaction back.
+        q("begin", 10).await.unwrap();
+        q(r#"delete from dbclient_test."Mixed""#, 10).await.unwrap();
+        pg.disconnect("test").await;
+        pg.connect(config.clone(), std::env::var("PGPASSWORD").ok())
+            .await
+            .unwrap();
+        let count = q(r#"select count(*) from dbclient_test."Mixed""#, 10)
+            .await
+            .unwrap();
+        assert_eq!(count.rows[0][0].as_deref(), Some("26"));
+        pg.disconnect("test").await;
+
+        // Read-only connections: enforced by the server, and not undone by
+        // SET or BEGIN READ WRITE.
+        let mut ro = config.clone();
+        ro.read_only = true;
+        pg.connect(ro, std::env::var("PGPASSWORD").ok())
+            .await
+            .unwrap();
+        let e = q(r#"delete from dbclient_test."Mixed""#, 10)
+            .await
+            .unwrap_err();
+        assert_eq!(e.code.as_deref(), Some("25006"));
+        assert!(e.hint.is_some());
+        let e = q("set default_transaction_read_only = off", 10)
+            .await
+            .unwrap_err();
+        assert_eq!(e.code.as_deref(), Some("read_only"));
+        let e = q("begin read write", 10).await.unwrap_err();
+        assert_eq!(e.code.as_deref(), Some("read_only"));
+        assert_eq!(e.tx, Some(TxState::Idle));
+        let e = q(r#"delete from dbclient_test."Mixed""#, 10)
+            .await
+            .unwrap_err();
+        assert_eq!(e.code.as_deref(), Some("25006"));
+        pg.disconnect("test").await;
+
+        pg.connect(config, std::env::var("PGPASSWORD").ok())
+            .await
+            .unwrap();
         q("drop schema dbclient_test cascade", 10).await.unwrap();
         pg.disconnect("test").await;
     }

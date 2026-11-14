@@ -9,6 +9,8 @@ import { closeResult, dbKey, pageResult, useStore } from '@/state/store'
 import { clampBottomHeight, DEFAULT_PREFS, setPrefs, usePrefs } from '@/state/prefs'
 import type { HistoryEntry } from '@/state/types'
 import { cn } from '@/lib/utils'
+import { resultSource } from '@/state/csvExport'
+import { ExportMenu } from './CsvExport'
 import { DataGrid } from './DataGrid'
 import { IconButton } from './IconButton'
 import { Pager } from './Pager'
@@ -82,6 +84,7 @@ export function BottomPanel() {
             {current.truncated && !current.pageable ? ' · row limit reached' : ''}
           </span>
         )}
+        {current && <ExportMenu source={resultSource(current)} owner={current.tabId} />}
         {current?.pageable && (
           <Pager
             offset={current.offset}
@@ -182,6 +185,7 @@ const time = (ms: number) =>
 
 function outcome(h: HistoryEntry): string {
   if (h.error) return `ERROR: ${h.error}`
+  if (h.note) return h.note
   if (h.rows != null)
     return `${h.rows} row${h.rows === 1 ? '' : 's'} retrieved starting from ${(h.offset ?? 0) + 1} in ${h.ms} ms${
       h.truncated ? ' (more available)' : ''

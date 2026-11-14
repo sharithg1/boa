@@ -22,6 +22,7 @@ import {
   Cylinder,
   Eye,
   FileCode,
+  FileDown,
   Folder,
   KeyRound,
   PanelLeft,
@@ -58,6 +59,7 @@ import { cn } from '@/lib/utils'
 import { compactCount } from '@/lib/format'
 import { useTitleBarInset } from '@/lib/window-chrome'
 import { qualified } from '@/lib/sql'
+import { exportTable } from '@/state/csvExport'
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -527,6 +529,12 @@ function useNodes(): Node[] {
                   <ContextMenuItem onSelect={() => newQueryTab(cid, db.name, select)}>
                     <FileCode />
                     New console: select *
+                  </ContextMenuItem>
+                  <ContextMenuItem
+                    onSelect={() => void exportTable(cid, db.name, schema.name, t.name)}
+                  >
+                    <FileDown />
+                    Export to CSV…
                   </ContextMenuItem>
                   <ContextMenuSeparator />
                   <ContextMenuItem onSelect={() => copy(`${schema.name}.${t.name}`)}>

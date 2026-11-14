@@ -20,6 +20,9 @@ use std::time::{Duration, Instant};
 use tokio::sync::Mutex;
 use tokio_postgres::{CancelToken, Client, SimpleQueryMessage};
 
+mod export;
+pub use export::{CsvOptions, ExportResult, write_file_atomic};
+
 struct Session {
     client: Client,
     cancel: CancelToken,
@@ -507,7 +510,7 @@ async fn run_simple(s: &Session, sql: &str, limit: usize) -> CmdResult<QueryResu
 
 #[cfg(test)]
 mod tests {
-    use super::{Pg, leading_keyword};
+    use super::{CsvOptions, Pg, leading_keyword};
     use crate::connections::{ConnConfig, SslMode};
 
     #[test]
@@ -646,6 +649,61 @@ mod tests {
                 .as_deref(),
             Some("26")
         );
+
+        // CSV export: the whole result streamed to a file, NULL vs '' and quoting.
+        let dir = std::env::temp_dir().join(format!("dbclient-live-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let dest = dir.join("out.csv");
+        let csv = CsvOptions {
+            delimiter: ',',
+            header: true,
+        };
+        let export = |sql: &'static str| pg.export_csv("test", &db, sql, &dest, csv, |_| {});
+        let r = export(
+            r#"select id, note, case when id = 1 then '' end as e from dbclient_test."Mixed" order by id;"#,
+        )
+        .await
+        .unwrap();
+        assert_eq!(r.rows, 26);
+        let text = std::fs::read_to_string(&dest).unwrap();
+        assert!(text.starts_with("id,note,e\n1,n1,\"\"\n2,n2,\n"));
+        assert_eq!(r.bytes, text.len() as u64);
+        export(r#"select 'a,b' as "x y", 'say "hi"' as q, E'l1\nl2' as nl -- trailing comment"#)
+            .await
+            .unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&dest).unwrap(),
+            "x y,q,nl\n\"a,b\",\"say \"\"hi\"\"\",\"l1\nl2\"\n"
+        );
+        // Anything that writes is refused and not run; the file is untouched.
+        assert!(
+            export(r#"with x as (insert into dbclient_test."Mixed" (id) values (200) returning id) select * from x"#)
+                .await
+                .is_err()
+        );
+        assert!(std::fs::read_to_string(&dest).unwrap().starts_with("x y,"));
+        // Inside a user transaction: sees its uncommitted rows, and a failed
+        // export leaves the transaction usable.
+        q("begin", 10).await.unwrap();
+        q(r#"insert into dbclient_test."Mixed" (id) values (300)"#, 10)
+            .await
+            .unwrap();
+        let r = export(r#"select id from dbclient_test."Mixed""#)
+            .await
+            .unwrap();
+        assert_eq!(r.rows, 27);
+        assert!(export("select 1 / 0").await.is_err());
+        assert_eq!(
+            q(r#"select count(*) from dbclient_test."Mixed""#, 10)
+                .await
+                .unwrap()
+                .rows[0][0]
+                .as_deref(),
+            Some("27")
+        );
+        q("rollback", 10).await.unwrap();
+        assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 1);
+        std::fs::remove_dir_all(&dir).unwrap();
 
         let schemas = pg
             .introspect("test", &db, &["dbclient_test".to_owned()])

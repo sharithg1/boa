@@ -31,6 +31,8 @@ import { setPrefs, usePrefs } from '@/state/prefs'
 import { rangePath, statementsAt, type Range, type TextMetrics } from '@/lib/statements'
 import { backend, toBackendError, type QueryResult } from '@/lib/backend'
 import { Pager } from './Pager'
+import { ExportMenu } from './CsvExport'
+import { tableOwner, tableSource } from '@/state/csvExport'
 import type { Table } from '@/state/types'
 import { qualified, quoteIdent, type Catalog } from '@/lib/sql'
 import { cn } from '@/lib/utils'
@@ -617,6 +619,15 @@ function TableView({
           />
         </label>
         <span className="flex-1" />
+        <ExportMenu
+          source={{
+            ...tableSource(connectionId, database, tab.schema, tab.table),
+            columns: load.state === 'ok' ? load.result.columns.map((c) => c.name) : undefined,
+            rows: shown
+          }}
+          owner={tableOwner(connectionId, database, tab.schema, tab.table)}
+          disabled={!connected}
+        />
         {table && (
           <button
             type="button"

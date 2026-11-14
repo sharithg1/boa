@@ -19,6 +19,21 @@ are saved in the app config dir (`connections.json`), passwords too, in
 plain text for now (the file is owner-only on Unix). In a plain browser (`dev:web`) a mock backend serves the sample
 data in `ui/src/state/mock.ts`.
 
+CSV export: the Export menu (download icon) on a result grid or table
+toolbar, or "Export to CSV…" on a table / view in the explorer, asks for a
+file and writes the whole result, not just the loaded page: the server
+streams `COPY (<statement>) TO STDOUT WITH (FORMAT csv)` into a temporary
+file that is renamed into place when done (progress and Cancel in the status
+bar; a toast and an Output log line at the end). Only read-only statements
+are re-run this way, in their own transaction, or under a savepoint that is
+rolled back when the session is inside a user transaction (so its
+uncommitted rows are included and a failure leaves it intact). Results of
+statements that change data (`INSERT … RETURNING`) are never re-run: their
+loaded rows are written instead. The same menu copies the loaded page as CSV
+and sets the delimiter (comma, tab, semicolon) and header row. NULL is an
+empty field, an empty string `""`, as in Postgres's COPY. The browser mock
+builds the file from the sample rows (at most 20,000) and downloads it.
+
 ## Layout
 
 ```

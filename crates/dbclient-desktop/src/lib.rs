@@ -10,10 +10,10 @@ mod pg;
 
 use connections::{ConnConfig, SavedConnection};
 use error::{CmdError, CmdResult};
-use pg::{ConnectInfo, Pg, QueryResult, Schema};
+use pg::{ConnectInfo, CsvOptions, ExportResult, Pg, QueryResult, Schema};
 use serde::Serialize;
 use std::path::PathBuf;
-use tauri::{AppHandle, Manager, State};
+use tauri::{AppHandle, Emitter, Manager, State};
 
 /// Version info for the frontend.
 #[derive(Debug, Clone, Serialize)]
@@ -134,6 +134,54 @@ async fn cancel_query(pg: State<'_, Pg>, id: String, database: String) -> CmdRes
     pg.cancel(&id, &database).await
 }
 
+/// Streams the whole result of a read-only statement to `path` as CSV,
+/// emitting `csv-export-progress` (`{ exportId, rows, bytes }`) while it
+/// runs. Cancelled with `cancel_query` on the same database.
+#[tauri::command]
+#[allow(clippy::too_many_arguments)]
+async fn export_csv(
+    app: AppHandle,
+    pg: State<'_, Pg>,
+    id: String,
+    database: String,
+    sql: String,
+    path: PathBuf,
+    options: CsvOptions,
+    export_id: String,
+) -> CmdResult<ExportResult> {
+    pg.export_csv(&id, &database, &sql, &path, options, |p| {
+        let _ = app.emit(
+            "csv-export-progress",
+            serde_json::json!({ "exportId": export_id, "rows": p.rows, "bytes": p.bytes }),
+        );
+    })
+    .await
+}
+
+/// Writes CSV built by the UI (rows of a result that must not be re-run).
+#[tauri::command]
+fn write_csv_file(path: PathBuf, contents: String) -> CmdResult<()> {
+    pg::write_file_atomic(&path, contents.as_bytes())
+}
+
+/// Shows the file in Finder (Explorer, or the folder elsewhere).
+#[tauri::command]
+fn reveal_path(path: PathBuf) -> CmdResult<()> {
+    let mut cmd;
+    if cfg!(target_os = "macos") {
+        cmd = std::process::Command::new("open");
+        cmd.arg("-R").arg(&path);
+    } else if cfg!(target_os = "windows") {
+        cmd = std::process::Command::new("explorer");
+        cmd.arg(format!("/select,{}", path.display()));
+    } else {
+        cmd = std::process::Command::new("xdg-open");
+        cmd.arg(path.parent().unwrap_or(&path));
+    }
+    cmd.spawn()?;
+    Ok(())
+}
+
 fn init_logging() {
     let filter = tracing_subscriber::EnvFilter::try_from_env("DBCLIENT_LOG")
         .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"));
@@ -163,7 +211,10 @@ pub fn run() {
             list_schemas,
             introspect,
             run_query,
-            cancel_query
+            cancel_query,
+            export_csv,
+            write_csv_file,
+            reveal_path
         ])
         .run(tauri::generate_context!())
         .expect("error while running the app");

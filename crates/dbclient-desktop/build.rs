@@ -15,6 +15,9 @@ const COMMANDS: &[&str] = &[
     "introspect",
     "run_query",
     "cancel_query",
+    "export_csv",
+    "write_csv_file",
+    "reveal_path",
 ];
 
 fn main() {

@@ -73,6 +73,8 @@ export type HistoryEntry = {
   /** Editor tab title it ran from (`console_1`). */
   source?: string
   error?: string
+  /** Outcome line for entries that aren't statement runs (`26 rows exported to …`). */
+  note?: string
 }
 
 export type ResultColumn = { name: string; type: string }

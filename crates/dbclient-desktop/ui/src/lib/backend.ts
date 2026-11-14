@@ -7,6 +7,7 @@
 import { invoke, isTauri } from '@tauri-apps/api/core'
 import { execute } from '@/state/mockData'
 import { sampleConnections } from '@/state/mock'
+import { type ExportBackend, mockExport, tauriExport } from './exportBackend'
 import type { ResultColumn, Schema } from '@/state/types'
 
 export type SslMode = 'disable' | 'prefer' | 'require' | 'verify-full'
@@ -79,7 +80,7 @@ export type Backend = {
     offset?: number
   ): Promise<QueryResult>
   cancelQuery(id: string, database: string): Promise<void>
-}
+} & ExportBackend
 
 const tauriBackend: Backend = {
   real: true,
@@ -94,7 +95,8 @@ const tauriBackend: Backend = {
   introspect: (id, database, schemas) => invoke('introspect', { id, database, schemas }),
   runQuery: (id, database, sql, limit, offset = 0) =>
     invoke('run_query', { id, database, sql, limit, offset }),
-  cancelQuery: (id, database) => invoke('cancel_query', { id, database })
+  cancelQuery: (id, database) => invoke('cancel_query', { id, database }),
+  ...tauriExport
 }
 
 // ── In-browser mock ───────────────────────────────────────────────────────
@@ -181,7 +183,8 @@ function mockBackend(): Backend {
     },
     cancelQuery: async (id, database) => {
       cancelled.add(`${id}\u0000${database}`)
-    }
+    },
+    ...mockExport(dbOf, cancelled)
   }
 }
 

@@ -560,6 +560,7 @@ dependencies = [
 name = "dbclient-desktop"
 version = "0.1.0"
 dependencies = [
+ "futures-util",
  "native-tls",
  "postgres-native-tls",
  "serde",

@@ -688,6 +688,14 @@ export async function pageResult(tabId: string, offset: number) {
   }
 }
 
+/** Adds an Output log entry for work outside `runQuery` (CSV exports). */
+export function logOutput(connectionId: string, entry: Omit<HistoryEntry, 'id'>) {
+  log(connectionId, { ...entry, id: nextId++ })
+}
+
+/** `[SQLSTATE] message` and the detail / hint lines of a backend error. */
+export const describeError = errorText
+
 export function closeResult(tabId: string) {
   useStore.setState((s) => {
     const { [tabId]: _, ...results } = s.results

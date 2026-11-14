@@ -7,6 +7,7 @@ import { connect, connectionString, dbKey, disconnect, findTable, useStore } fro
 import { ENGINE_LABEL } from '@/lib/format'
 import { cn } from '@/lib/utils'
 import { IconButton } from './IconButton'
+import { ExportStatus } from './CsvExport'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import { ConnStateDot, connMeta } from './Sidebar'
 
@@ -66,6 +67,7 @@ export function StatusBar() {
         {!active && <span className="text-dim">No database selected</span>}
       </nav>
       <span className="flex-1" />
+      <ExportStatus />
       {right && <span className="truncate px-1.5 font-mono text-xs text-dim">{right}</span>}
       {tab?.kind === 'query' && <span className="px-1.5 text-xs text-dim">UTF-8</span>}
       {conn && connId && <ConnectionPopover connectionId={connId} />}

@@ -2,6 +2,7 @@ import { useEffect } from 'react'
 import { BottomPanel } from './components/BottomPanel'
 import { CommandPalette } from './components/CommandPalette'
 import { ConnectionDialog, PasswordPrompt } from './components/ConnectionDialog'
+import { GuardRails } from './components/GuardDialogs'
 import { RightPanel } from './components/RightPanel'
 import { SettingsView } from './components/SettingsView'
 import { Sidebar, newQueryTarget } from './components/Sidebar'
@@ -48,6 +49,7 @@ export function App() {
       <CommandPalette />
       <ConnectionDialog />
       <PasswordPrompt />
+      <GuardRails />
       <Toasts />
     </div>
   )

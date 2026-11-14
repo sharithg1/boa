@@ -27,6 +27,8 @@ import {
 } from '@/components/ui/select'
 import { Spinner } from '@/components/ui/spinner'
 import { cn } from '@/lib/utils'
+import { CONNECTION_COLORS, ENVIRONMENTS, ENV_COLOR, isColor } from '@/lib/connTag'
+import type { Environment } from '@/state/types'
 
 const SSL_MODES: [SslMode, string][] = [
   ['disable', 'Disable'],
@@ -42,7 +44,8 @@ const blank = (): ConnConfig => ({
   port: 5432,
   user: 'postgres',
   database: 'postgres',
-  sslMode: 'prefer'
+  sslMode: 'prefer',
+  readOnly: false
 })
 
 /** Fills the fields from `postgres://user:pass@host:port/db?sslmode=…`. */
@@ -256,10 +259,57 @@ export function ConnectionDialog() {
               </Select>
             </Field>
           </div>
-          <Label className="flex w-fit cursor-pointer items-center gap-2 text-sm font-normal text-soft">
-            <Checkbox checked={savePassword} onCheckedChange={(v) => setSavePassword(v === true)} />
-            Save password
-          </Label>
+          <div className="grid grid-cols-2 gap-3">
+            <Field label="Environment">
+              <Select
+                value={cfg.environment ?? 'none'}
+                onValueChange={(v) =>
+                  set({ environment: v === 'none' ? undefined : (v as Environment) })
+                }
+              >
+                <SelectTrigger className="w-full">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="none">None</SelectItem>
+                  {ENVIRONMENTS.map(([v, label]) => (
+                    <SelectItem key={v} value={v}>
+                      {label}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </Field>
+            <ColorField
+              value={cfg.color}
+              fallback={cfg.environment ? ENV_COLOR[cfg.environment] : undefined}
+              onChange={(color) => set({ color })}
+            />
+          </div>
+          <div className="flex flex-wrap items-center gap-x-5 gap-y-2">
+            <Label className="flex w-fit cursor-pointer items-center gap-2 text-sm font-normal text-soft">
+              <Checkbox
+                checked={savePassword}
+                onCheckedChange={(v) => setSavePassword(v === true)}
+              />
+              Save password
+            </Label>
+            <Label
+              className="flex w-fit cursor-pointer items-center gap-2 text-sm font-normal text-soft"
+              title="Sessions run with default_transaction_read_only = on: the server refuses writes"
+            >
+              <Checkbox
+                checked={cfg.readOnly}
+                onCheckedChange={(v) => set({ readOnly: v === true })}
+              />
+              Read-only
+            </Label>
+          </div>
+          {cfg.environment === 'production' && (
+            <p className="-mt-1 text-xs text-quiet">
+              Destructive statements on production always ask for confirmation.
+            </p>
+          )}
 
           <TestResult test={test} />
 
@@ -309,6 +359,60 @@ function Field({ label, children }: { label: string; children: ReactNode }) {
       <span className="text-xs text-quiet">{label}</span>
       {children}
     </label>
+  )
+}
+
+/** Colour swatches: "auto" (the environment's colour, if any) or a palette colour. */
+function ColorField({
+  value,
+  fallback,
+  onChange
+}: {
+  value: string | undefined
+  fallback: string | undefined
+  onChange: (color: string | undefined) => void
+}) {
+  const picked = isColor(value) ? value : undefined
+  const swatch =
+    'grid size-5 cursor-pointer place-items-center rounded-full outline-none ring-offset-2 ring-offset-background focus-visible:ring-2 focus-visible:ring-ring'
+  return (
+    <div className="flex min-w-0 flex-col gap-1.5">
+      <span className="text-xs text-quiet">Colour</span>
+      <div role="radiogroup" aria-label="Colour" className="flex h-9 items-center gap-1.5">
+        <button
+          type="button"
+          role="radio"
+          aria-checked={!picked}
+          title={fallback ? `Auto (${fallback})` : 'None'}
+          onClick={() => onChange(undefined)}
+          className={cn(
+            swatch,
+            'border border-dashed border-dim text-[9px] text-dim',
+            !picked && 'ring-2 ring-foreground/60'
+          )}
+          style={
+            fallback
+              ? { borderColor: CONNECTION_COLORS[fallback as keyof typeof CONNECTION_COLORS] }
+              : undefined
+          }
+        >
+          A
+        </button>
+        {Object.entries(CONNECTION_COLORS).map(([name, css]) => (
+          <button
+            key={name}
+            type="button"
+            role="radio"
+            aria-checked={picked === name}
+            aria-label={name}
+            title={name}
+            onClick={() => onChange(name)}
+            className={cn(swatch, picked === name && 'ring-2 ring-foreground/60')}
+            style={{ background: css }}
+          />
+        ))}
+      </div>
+    </div>
   )
 }
 

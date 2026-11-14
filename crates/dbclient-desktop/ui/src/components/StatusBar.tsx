@@ -9,6 +9,9 @@ import { cn } from '@/lib/utils'
 import { IconButton } from './IconButton'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import { ConnStateDot, connMeta } from './Sidebar'
+import { ConnectionTag } from './ConnectionTag'
+import { TxStatus } from './TxControls'
+import { connectionColor } from '@/lib/connTag'
 
 export function StatusBar() {
   const active = useStore((s) => s.active)
@@ -68,6 +71,7 @@ export function StatusBar() {
       <span className="flex-1" />
       {right && <span className="truncate px-1.5 font-mono text-xs text-dim">{right}</span>}
       {tab?.kind === 'query' && <span className="px-1.5 text-xs text-dim">UTF-8</span>}
+      <TxStatus />
       {conn && connId && <ConnectionPopover connectionId={connId} />}
       {!conn && <span className="px-1.5">no connection</span>}
     </footer>
@@ -76,13 +80,15 @@ export function StatusBar() {
 
 function ConnectionPopover({ connectionId }: { connectionId: string }) {
   const conn = useStore((s) => s.connections[connectionId])!
+  const color = connectionColor(conn)
   const btn =
     'h-7 cursor-pointer rounded-md border border-input bg-card text-sm text-soft hover:bg-hover-strong hover:text-foreground disabled:cursor-default disabled:opacity-50'
   return (
     <Popover>
       <PopoverTrigger className="flex h-6 cursor-pointer items-center gap-1.5 rounded-md px-1.5 outline-none hover:bg-hover hover:text-foreground data-[state=open]:bg-hover">
-        <Server className="size-3.5 shrink-0" />
+        <Server className="size-3.5 shrink-0" style={color ? { color } : undefined} />
         {conn.name}
+        <ConnectionTag conn={conn} />
         <ConnStateDot conn={conn} />
         <span className="text-xs text-dim">{connMeta(conn)}</span>
         <ChevronDown className="size-3 shrink-0" />

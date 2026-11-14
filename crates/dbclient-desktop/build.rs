@@ -15,6 +15,8 @@ const COMMANDS: &[&str] = &[
     "introspect",
     "run_query",
     "cancel_query",
+    "set_tx_mode",
+    "quit",
 ];
 
 fn main() {

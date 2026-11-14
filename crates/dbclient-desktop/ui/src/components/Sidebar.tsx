@@ -75,6 +75,8 @@ import {
 import { IconButton } from './IconButton'
 import { PanelResizeHandle } from './PanelResizeHandle'
 import { ScopePicker } from './ScopePicker'
+import { ConnectionTag } from './ConnectionTag'
+import { connectionColor } from '@/lib/connTag'
 
 export function Sidebar() {
   const savedWidth = usePrefs((s) => s.sidebarWidth)
@@ -234,6 +236,12 @@ function SidebarFooter() {
   )
 }
 
+/** Server icon, in the connection's colour when it has one. */
+function ConnectionIcon({ conn }: { conn: Connection }) {
+  const color = connectionColor(conn)
+  return <Server className={cn(ICON, 'text-quiet')} style={color ? { color } : undefined} />
+}
+
 export function connMeta(c: Connection): string {
   switch (c.state) {
     case 'connected':
@@ -342,10 +350,11 @@ function useNodes(): Node[] {
       id: cid,
       parent: null,
       depth: 0,
-      icon: <Server className={cn(ICON, 'text-quiet')} />,
+      icon: <ConnectionIcon conn={conn} />,
       label: (
         <span className="flex min-w-0 items-center gap-2">
           <span className="truncate">{conn.name}</span>
+          <ConnectionTag conn={conn} />
           <ConnStateDot conn={conn} />
         </span>
       ),

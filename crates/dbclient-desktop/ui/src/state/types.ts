@@ -36,6 +36,9 @@ export type Database = {
 
 export type SslMode = 'disable' | 'prefer' | 'require' | 'verify-full'
 
+/** Environment tag of a connection (production always confirms destructive statements). */
+export type Environment = 'development' | 'test' | 'staging' | 'production'
+
 export type Connection = {
   id: string
   name: string
@@ -53,6 +56,11 @@ export type Connection = {
   sslMode: SslMode
   /** A password is stored in the connections config file. */
   hasPassword: boolean
+  /** Sessions are read-only on the server (`default_transaction_read_only`). */
+  readOnly: boolean
+  environment?: Environment
+  /** Palette colour name (lib/connTag.ts); unset: the environment's colour. */
+  color?: string
 }
 
 export type HistoryEntry = {

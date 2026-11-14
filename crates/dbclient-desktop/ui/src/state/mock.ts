@@ -4,7 +4,7 @@
 import type { Column, Connection, Database, Table } from './types'
 
 /** A sample server: a connection without the saved-settings fields. */
-export type SampleConnection = Omit<Connection, 'database' | 'sslMode' | 'hasPassword'>
+export type SampleConnection = Omit<Connection, 'database' | 'sslMode' | 'hasPassword' | 'readOnly'>
 
 const col = (
   name: string,

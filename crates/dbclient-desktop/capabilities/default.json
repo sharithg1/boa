@@ -19,6 +19,9 @@
     "allow-list-schemas",
     "allow-introspect",
     "allow-run-query",
-    "allow-cancel-query"
+    "allow-cancel-query",
+    "allow-set-tx-mode",
+    "allow-quit",
+    "core:window:allow-destroy"
   ]
 }

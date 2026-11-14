@@ -19,6 +19,9 @@ pub struct CmdError {
     pub detail: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub hint: Option<String>,
+    /// The session's transaction state after a failed statement.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tx: Option<crate::tx::TxState>,
 }
 
 impl CmdError {
@@ -56,6 +59,7 @@ impl From<tokio_postgres::Error> for CmdError {
                 },
                 detail: db.detail().map(str::to_owned),
                 hint: db.hint().map(str::to_owned),
+                tx: None,
             };
         }
         // "error connecting to server: Connection refused (os error 61)"

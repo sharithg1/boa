@@ -53,6 +53,7 @@ import {
 } from '@/components/ui/dropdown-menu'
 import { IconButton } from './IconButton'
 import { SidebarToggle } from './Sidebar'
+import { connectionColor } from '@/lib/connTag'
 
 export function TitleBar() {
   const sidebarOpen = useStore((s) => s.sidebarOpen)
@@ -103,6 +104,7 @@ export function RightPanelToggle() {
 function DatabaseTitle({ connectionId, database }: { connectionId: string; database: string }) {
   const conn = useStore((s) => s.connections[connectionId])
   if (!conn) return null
+  const color = connectionColor(conn)
   const tooltip = [database, `${conn.name} · ${connectionString(conn)}`, 'Search (⌘K)'].join('\n')
   return (
     <button
@@ -113,7 +115,10 @@ function DatabaseTitle({ connectionId, database }: { connectionId: string; datab
       onClick={() => useStore.setState({ paletteOpen: true })}
       className="group -ml-1.5 flex h-7 max-w-[200px] min-w-0 shrink-0 cursor-pointer items-center gap-1.5 rounded-md px-1.5 text-quiet hover:bg-hover hover:text-foreground"
     >
-      <Database className="size-3.5 shrink-0 text-dim group-hover:text-quiet" />
+      <Database
+        className="size-3.5 shrink-0 text-dim group-hover:text-quiet"
+        style={color ? { color } : undefined}
+      />
       <span className="min-w-0 truncate font-mono text-sm">{database}</span>
       <ChevronDown className="size-3.5 shrink-0 text-dim" />
     </button>

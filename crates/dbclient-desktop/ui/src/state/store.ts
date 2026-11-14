@@ -6,6 +6,8 @@
 import { create } from 'zustand'
 import { backend, toBackendError, type ConnConfig, type SavedConnection } from '@/lib/backend'
 import { setPrefs, usePrefs } from './prefs'
+import { confirmCloseTx, confirmRun } from './guards'
+import { readOnlyEscape } from '@/lib/guard'
 import type { Connection, HistoryEntry, ResultSet, Table } from './types'
 
 export type QueryTab = { id: string; kind: 'query'; title: string; sql: string }
@@ -331,6 +333,9 @@ function fromSaved(c: SavedConnection, prev?: Connection): Connection {
     database: c.database,
     sslMode: c.sslMode,
     hasPassword: c.hasPassword,
+    readOnly: c.readOnly ?? false,
+    environment: c.environment ?? undefined,
+    color: c.color ?? undefined,
     state: prev?.state ?? 'disconnected',
     latencyMs: prev?.latencyMs ?? null,
     serverVersion: prev?.serverVersion ?? null,
@@ -346,7 +351,10 @@ export function configOf(c: Connection): ConnConfig {
     port: c.port ?? 5432,
     user: c.user ?? '',
     database: c.database,
-    sslMode: c.sslMode
+    sslMode: c.sslMode,
+    readOnly: c.readOnly,
+    environment: c.environment,
+    color: c.color
   }
 }
 
@@ -381,7 +389,12 @@ export async function saveConnection(
       ? s.connectionOrder
       : [...s.connectionOrder, config.id]
   }))
-  if (prev?.state === 'connected')
+  // Reconnecting rolls back open transactions: ask first (declined: the
+  // new settings apply at the next connect).
+  if (
+    prev?.state === 'connected' &&
+    (await confirmCloseTx('reconnect', { [config.id]: config.name }, config.id))
+  )
     await connect(config.id, savePassword ? undefined : (password ?? undefined))
 }
 
@@ -452,6 +465,8 @@ export async function connect(id: string, password?: string): Promise<boolean> {
 }
 
 export async function disconnect(id: string) {
+  const name = useStore.getState().connections[id]?.name ?? id
+  if (!(await confirmCloseTx('disconnect', { [id]: name }, id))) return
   patchConnection(id, { state: 'disconnected', latencyMs: null })
   try {
     await backend.disconnect(id)
@@ -568,6 +583,15 @@ export async function runQuery(
     useStore.setState({ bottomOpen: true, bottomView: 'output' })
     return
   }
+  // Guard rails: no way out of read-only, and a confirmation before
+  // destructive statements (lib/guard.ts, state/guards.ts).
+  const writable = conn.readOnly ? readOnlyEscape(text) : null
+  if (writable) {
+    log(connectionId, { ...base, id: nextId++, ms: 0, rows: null, error: `Not run: ${writable}` })
+    useStore.setState({ bottomOpen: true, bottomView: 'output' })
+    return
+  }
+  if (!(await confirmRun(conn, database, text))) return
   useStore.setState((s) => ({ running: { ...s.running, [tabId]: true } }))
   try {
     const pageSize = usePrefs.getState().rowLimit

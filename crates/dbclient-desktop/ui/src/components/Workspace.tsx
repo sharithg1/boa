@@ -28,7 +28,7 @@ import {
   type TableTab
 } from '@/state/store'
 import { setPrefs, usePrefs } from '@/state/prefs'
-import { statementAt } from '@/state/mockData'
+import { rangePath, statementsAt, type Range, type TextMetrics } from '@/lib/statements'
 import { backend, toBackendError, type QueryResult } from '@/lib/backend'
 import type { Table } from '@/state/types'
 import { qualified, quoteIdent, type Catalog } from '@/lib/sql'
@@ -45,7 +45,10 @@ import { Kbd } from './chrome'
 import { DataGrid } from './DataGrid'
 import { IconButton } from './IconButton'
 import { Spinner } from '@/components/ui/spinner'
-import { SqlHighlight } from './SqlHighlight'
+import { SqlHighlight, type EditorMark } from './SqlHighlight'
+import { CompletionPopup, caretBox, charWidth } from './CompletionPopup'
+import { StatementChooser } from './StatementChooser'
+import { complete, type CompletionResult } from '@/lib/complete'
 
 export function Workspace() {
   const active = useStore((s) => s.active)
@@ -134,6 +137,22 @@ function QueryView({
   const area = useRef<HTMLTextAreaElement>(null)
   const gutter = useRef<HTMLDivElement>(null)
   const layer = useRef<HTMLPreElement>(null)
+  const box = useRef<HTMLDivElement>(null)
+  // Open completion list; `explicit` once invoked with Ctrl+Space, so it
+  // keeps showing as the prefix is erased.
+  const [comp, setComp] = useState<{
+    res: CompletionResult
+    sel: number
+    explicit: boolean
+  } | null>(null)
+  // The statement at the caret is outlined; ⌘↵ arms it (filled) and Enter
+  // runs it. With subqueries at the caret it is a chooser (statement vs.
+  // subqueries). Cleared when the caret moves, the text changes or the
+  // editor loses focus. `caret`: the caret while the editor has focus.
+  const [chooser, setChooser] = useState<{ items: Range[]; sel: number; at: number } | null>(null)
+  const [caret, setCaret] = useState<number | null>(null)
+  /** Set while a completion is inserted, so that edit does not reopen the list. */
+  const accepting = useRef(false)
   // Names to colour as schema / table / column references.
   const catalog = useMemo<Catalog | undefined>(() => {
     if (!db) return undefined
@@ -148,16 +167,84 @@ function QueryView({
   const lines = tab.sql.split('\n').length
 
   const exec = (sql: string) => runQuery(connectionId, database, tab.id, tab.title, sql)
-  /** Runs the selection, else the statement under the caret. */
-  const run = () => {
+  /**
+   * Runs the selection. Otherwise arms the statement under the caret
+   * (offering its subqueries too, when inside one); Enter, or calling this
+   * again, runs the armed one. `direct` (the toolbar button)
+   * skips the highlight step when there is nothing to choose between.
+   */
+  const run = (direct = false) => {
     const el = area.current
     if (!el) return exec(tab.sql)
+    if (chooser) return pickStatement(chooser.sel)
     const selected = tab.sql.slice(el.selectionStart, el.selectionEnd)
-    exec(selected.trim() ? selected : statementAt(tab.sql, el.selectionStart))
+    if (selected.trim()) return exec(selected)
+    const items = onStatement(tab.sql, el.selectionStart)
+    if (items.length === 0) return
+    if (direct && items.length === 1) return exec(tab.sql.slice(items[0]!.from, items[0]!.to))
+    setComp(null)
+    el.focus() // from the toolbar button: keys must reach the editor
+    setChooser({ items, sel: 0, at: el.selectionStart })
+  }
+  const pickStatement = (i: number) => {
+    const r = chooser?.items[i]
+    setChooser(null)
+    if (r) exec(tab.sql.slice(r.from, r.to))
+  }
+  const metrics = (): TextMetrics | null => {
+    const el = area.current
+    if (!el) return null
+    const cs = getComputedStyle(el)
+    return {
+      charWidth: charWidth(cs),
+      lineHeight: Number.parseFloat(cs.lineHeight) || 20,
+      padLeft: Number.parseFloat(cs.paddingLeft) || 0,
+      padTop: Number.parseFloat(cs.paddingTop) || 0,
+      tabSize: Number.parseInt(cs.tabSize, 10) || 8
+    }
+  }
+  // Fill the armed statement, else outline the one the caret is on.
+  // Cheap (one pass over the script), so recomputed each render.
+  const marks = ((): EditorMark[] => {
+    const armed = chooser?.items[chooser.sel]
+    const r = armed ?? (caret == null ? undefined : onStatement(tab.sql, caret)[0])
+    const m = r && metrics()
+    return r && m ? [{ d: rangePath(tab.sql, r, m), kind: armed ? 'fill' : 'outline' }] : []
+  })()
+  const suggest = (sql: string, pos: number, explicit: boolean) => {
+    const res = db
+      ? complete(sql, pos, db.schemas, { defaultSchema: schema, searchPath: ['public'], explicit })
+      : null
+    setComp(res ? { res, sel: 0, explicit } : null)
+  }
+  /** Replaces the word at the caret (to its end with `whole`) with item `i`. */
+  const accept = (i: number, whole: boolean) => {
+    const el = area.current
+    const item = comp?.res.items[i]
+    if (!el || !comp || !item) return
+    const from = comp.res.from
+    const to = whole ? comp.res.to : el.selectionStart
+    const caret = from + (item.caret ?? item.insert.length)
+    setComp(null)
+    el.focus()
+    el.setSelectionRange(from, to)
+    // insertText keeps the edit on the textarea's own undo stack.
+    accepting.current = true
+    const ok = document.execCommand('insertText', false, item.insert)
+    accepting.current = false
+    if (ok) {
+      el.setSelectionRange(caret, caret)
+      // A schema was picked (`billing.`): go straight on to its tables.
+      if (item.insert.endsWith('.')) suggest(el.value, caret, false)
+    } else {
+      setQuerySql(key, tab.id, tab.sql.slice(0, from) + item.insert + tab.sql.slice(to))
+      requestAnimationFrame(() => el.setSelectionRange(caret, caret))
+    }
   }
   const trackCaret = () => {
     const el = area.current
     if (!el) return
+    setCaret(el.selectionStart === el.selectionEnd ? el.selectionStart : null)
     const before = tab.sql.slice(0, el.selectionStart).split('\n')
     useStore.setState({
       cursor: { line: before.length, col: before[before.length - 1]!.length + 1 }
@@ -171,7 +258,7 @@ function QueryView({
           label="Execute (⌘↵)"
           side="bottom"
           disabled={!connected || !tab.sql.trim() || running}
-          onClick={run}
+          onClick={() => run(true)}
           className="text-status-ok hover:text-status-ok"
         >
           <Play className="size-3.5" />
@@ -264,8 +351,14 @@ function QueryView({
             <div key={i}>{i + 1}</div>
           ))}
         </div>
-        <div className="relative min-w-0 flex-1 overflow-hidden">
-          <SqlHighlight ref={layer} sql={tab.sql} catalog={catalog} className={EDITOR_TEXT} />
+        <div ref={box} className="relative min-w-0 flex-1 overflow-hidden">
+          <SqlHighlight
+            ref={layer}
+            sql={tab.sql}
+            catalog={catalog}
+            marks={marks}
+            className={EDITOR_TEXT}
+          />
           <textarea
             ref={area}
             autoFocus
@@ -277,13 +370,35 @@ function QueryView({
             aria-label="SQL"
             placeholder={`-- ${database}.${schema}\nSELECT …`}
             onChange={(e) => {
-              setQuerySql(key, tab.id, e.target.value)
+              const { value, selectionStart: pos } = e.target
+              setQuerySql(key, tab.id, value)
+              setChooser(null)
               trackCaret()
+              if (accepting.current) return
+              // Open on typing a name character or `.`; follow edits while open.
+              const input = e.nativeEvent as InputEvent
+              const typed = input.inputType === 'insertText' && /[\w$."]$/.test(input.data ?? '')
+              const erased = !!comp && input.inputType?.startsWith('delete')
+              if (typed || erased) suggest(value, pos, comp?.explicit ?? false)
+              else setComp(null)
             }}
-            onSelect={trackCaret}
+            onSelect={(e) => {
+              trackCaret()
+              setChooser((c) => (c && e.currentTarget.selectionStart !== c.at ? null : c))
+              // Caret moved off the word being completed: close.
+              const { selectionStart: a, selectionEnd: b } = e.currentTarget
+              setComp((c) => (c && (a !== b || a < c.res.from || a > c.res.to) ? null : c))
+            }}
             onFocus={trackCaret}
-            onBlur={() => useStore.setState({ cursor: null })}
+            onBlur={() => {
+              useStore.setState({ cursor: null })
+              setComp(null)
+              setChooser(null)
+              setCaret(null)
+            }}
             onScroll={(e) => {
+              setComp((c) => c && { ...c })
+              setChooser((c) => c && { ...c })
               const { scrollTop, scrollLeft } = e.currentTarget
               if (gutter.current) gutter.current.scrollTop = scrollTop
               if (layer.current) {
@@ -292,6 +407,49 @@ function QueryView({
               }
             }}
             onKeyDown={(e) => {
+              if (e.ctrlKey && (e.key === ' ' || e.code === 'Space')) {
+                e.preventDefault()
+                suggest(tab.sql, e.currentTarget.selectionStart, true)
+                return
+              }
+              if (chooser && !e.altKey) {
+                const n = chooser.items.length
+                if (n > 1 && (e.key === 'ArrowDown' || e.key === 'ArrowUp')) {
+                  e.preventDefault()
+                  const d = e.key === 'ArrowDown' ? 1 : -1
+                  return setChooser({ ...chooser, sel: (chooser.sel + d + n) % n })
+                }
+                if (e.key === 'Enter') {
+                  // Enter (or ⌘↵ again) runs the armed statement.
+                  e.preventDefault()
+                  return pickStatement(chooser.sel)
+                }
+                if (e.key === 'Escape') {
+                  e.preventDefault()
+                  return setChooser(null)
+                }
+                if (!['Shift', 'Meta', 'Control'].includes(e.key)) setChooser(null)
+              }
+              if (comp && !e.metaKey && !e.ctrlKey && !e.altKey) {
+                const n = comp.res.items.length
+                const move = (d: number) => {
+                  e.preventDefault()
+                  setComp({ ...comp, sel: (comp.sel + d + n) % n })
+                }
+                if (e.key === 'ArrowDown') return move(1)
+                if (e.key === 'ArrowUp') return move(-1)
+                if (e.key === 'PageDown') return move(Math.min(9, n - 1 - comp.sel) || 0)
+                if (e.key === 'PageUp') return move(-Math.min(9, comp.sel) || 0)
+                if (e.key === 'Escape') {
+                  e.preventDefault()
+                  return setComp(null)
+                }
+                if ((e.key === 'Enter' || e.key === 'Tab') && !e.shiftKey) {
+                  // Enter inserts before the rest of the word, Tab replaces it.
+                  e.preventDefault()
+                  return accept(comp.sel, e.key === 'Tab')
+                }
+              }
               if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
                 e.preventDefault()
                 run()
@@ -311,6 +469,27 @@ function QueryView({
               'relative h-full w-full resize-none bg-transparent text-transparent caret-body outline-none placeholder:text-dim selection:bg-status-run/35'
             )}
           />
+          {chooser && chooser.items.length > 1 && area.current && box.current && (
+            <StatementChooser
+              sql={tab.sql}
+              items={chooser.items}
+              selected={chooser.sel}
+              caret={caretBox(area.current, chooser.at)}
+              bounds={{ width: box.current.clientWidth, height: box.current.clientHeight }}
+              onPick={pickStatement}
+              onHover={(i) => setChooser({ ...chooser, sel: i })}
+            />
+          )}
+          {comp && area.current && box.current && (
+            <CompletionPopup
+              items={comp.res.items}
+              selected={comp.sel}
+              caret={caretBox(area.current, comp.res.from)}
+              bounds={{ width: box.current.clientWidth, height: box.current.clientHeight }}
+              onPick={(i) => accept(i, false)}
+              onHover={(i) => setComp({ ...comp, sel: i })}
+            />
+          )}
         </div>
       </div>
     </div>
@@ -439,4 +618,17 @@ function TableView({
       )}
     </div>
   )
+}
+
+/**
+ * The statement at `pos` (then its subqueries there), or [] when the caret
+ * is not on one: inside it, or on its first / last line around it, but not
+ * on a blank line between statements.
+ */
+function onStatement(sql: string, pos: number): Range[] {
+  const items = statementsAt(sql, pos)
+  const r = items[0]
+  if (!r) return []
+  const gap = pos < r.from ? sql.slice(pos, r.from) : pos > r.to ? sql.slice(r.to, pos) : ''
+  return gap.includes('\n') ? [] : items
 }

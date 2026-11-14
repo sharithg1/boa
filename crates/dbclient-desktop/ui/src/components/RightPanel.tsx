@@ -151,7 +151,7 @@ function StructureTab({ connectionId, database }: { connectionId: string; databa
             </span>
             <span className="min-w-0 truncate font-mono text-soft">{c.name}</span>
             <span className="ml-auto shrink-0 font-mono text-xs text-quiet">
-              {c.type}
+              <span className="text-sql-type">{c.type}</span>
               {c.nullable ? '?' : ''}
             </span>
           </div>

@@ -28,7 +28,7 @@ export type Catalog = {
   columns: ReadonlySet<string>
 }
 
-const KEYWORDS = new Set(
+export const KEYWORDS: ReadonlySet<string> = new Set(
   `add all alter analyze and any as asc begin between by cascade case cast check collate column
   commit constraint create cross current_date current_time current_timestamp database default
   delete desc distinct do drop else end except exists explain false fetch filter first for foreign
@@ -41,10 +41,15 @@ const KEYWORDS = new Set(
     .filter(Boolean)
 )
 
-const TYPES = new Set(
-  `bigint bigserial bit bool boolean bytea char character date datetime decimal double float float4
-  float8 int int2 int4 int8 integer interval json jsonb money numeric precision real serial
-  smallint smallserial text time timestamp timestamptz tinyint unsigned uuid varchar zone`
+export const TYPES: ReadonlySet<string> = new Set(
+  `bigint bigserial binary bit blob bool boolean box bpchar bytea char character cidr circle citext
+  clob date daterange datetime datetime2 dec decimal double enum float float4 float8 geography
+  geometry hstore inet int int2 int4 int4range int8 int8range integer interval json jsonb line
+  longblob longtext lseg macaddr macaddr8 mediumblob mediumint mediumtext money nchar ntext numeric
+  numrange nvarchar oid path point polygon precision real regclass regproc regtype serial serial2
+  serial4 serial8 smalldatetime smallint smallserial text time timestamp timestamptz timetz
+  tinyblob tinyint tinytext tsquery tsrange tstzrange tsvector unsigned uuid varbinary varchar
+  varying xml year zone`
     .split(/\s+/)
     .filter(Boolean)
 )
@@ -161,8 +166,18 @@ export function tokenize(sql: string, catalog?: Catalog): Token[] {
       const lower = word.toLowerCase()
       const prev = prevSignificant()
       const afterDot = prev?.text.endsWith('.') && prev.kind === 'operator'
+      // `x::name`: whatever follows a cast is a type, even a user-defined one.
+      const afterCast = prev?.kind === 'operator' && prev.text.endsWith('::')
       let kind: TokenKind
-      if (!afterDot && KEYWORDS.has(lower)) kind = 'keyword'
+      if (afterCast) kind = 'type'
+      // `timestamp with time zone`: the whole phrase is the type.
+      else if (
+        (lower === 'with' || lower === 'without') &&
+        /^\s+time\s+zone\b/i.test(sql.slice(j)) &&
+        prev?.kind === 'type'
+      )
+        kind = 'type'
+      else if (!afterDot && KEYWORDS.has(lower)) kind = 'keyword'
       else if (!afterDot && TYPES.has(lower)) kind = 'type'
       else kind = identKind(word, sql, j, catalog)
       push(kind, word)

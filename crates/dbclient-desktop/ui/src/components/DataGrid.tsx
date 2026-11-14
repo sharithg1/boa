@@ -2,16 +2,18 @@
 // data editor): sticky header (name + type, click to sort asc → desc → off,
 // drag the right edge to resize), sticky row numbers, `<null>` for nulls,
 // a selected cell moved with the arrow keys and copied with ⌘C, and a
-// floating row-count pill.
+// floating row-count pill. Values are coloured by column type (numbers,
+// booleans, dates, uuids, JSON token by token); a JSON cell opens in the
+// JSON viewer on double-click, Enter or its hover button.
 import { useMemo, useRef, useState, type KeyboardEvent, type PointerEvent } from 'react'
-import { ArrowDown, ArrowUp, KeyRound } from 'lucide-react'
+import { ArrowDown, ArrowUp, Braces, KeyRound } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { pushToast } from '@/state/store'
 import type { ResultColumn } from '@/state/types'
+import { VALUE_CLASS, valueKind } from '@/lib/values'
+import { JsonInline, JsonViewer, type JsonTarget } from './JsonViewer'
 
 type Sort = { col: number; dir: 1 | -1 } | null
-
-const NUMERIC = /int|serial|decimal|numeric|real|double|float/i
 
 function initialWidth(c: ResultColumn, rows: (string | null)[][], i: number): number {
   let len = c.name.length + c.type.length + 4
@@ -34,13 +36,15 @@ export function DataGrid({
   const [widths, setWidths] = useState<number[]>(() =>
     columns.map((c, i) => initialWidth(c, rows, i))
   )
+  const [viewing, setViewing] = useState<JsonTarget | null>(null)
+  const kinds = useMemo(() => columns.map((c) => valueKind(c.type)), [columns])
   const scroller = useRef<HTMLDivElement>(null)
   const resize = useRef<{ i: number; x: number; w: number } | null>(null)
 
   const view = useMemo(() => {
     const idx = rows.map((_, i) => i)
     if (!sort) return idx
-    const numeric = NUMERIC.test(columns[sort.col]?.type ?? '')
+    const numeric = kinds[sort.col] === 'number'
     return idx.sort((a, b) => {
       const x = rows[a]![sort.col]
       const y = rows[b]![sort.col]
@@ -48,7 +52,16 @@ export function DataGrid({
       const d = numeric ? Number(x) - Number(y) : x.localeCompare(y)
       return d * sort.dir
     })
-  }, [rows, columns, sort])
+  }, [rows, kinds, sort])
+
+  /** Opens the JSON viewer on a cell (view coordinates) if it holds JSON. */
+  const openJson = (r: number, c: number) => {
+    const v = rows[view[r]!]?.[c]
+    const col = columns[c]
+    if (v == null || !col || kinds[c] !== 'json') return false
+    setViewing({ column: col.name, type: col.type, row: r + 1, value: v })
+    return true
+  }
 
   const cycleSort = (col: number) =>
     setSort((s) => (s?.col !== col ? { col, dir: 1 } : s.dir === 1 ? { col, dir: -1 } : null))
@@ -59,6 +72,10 @@ export function DataGrid({
       const v = rows[view[sel.r]!]?.[sel.c]
       void navigator.clipboard?.writeText(v ?? '').catch(() => {})
       pushToast({ kind: 'info', title: 'Copied value' }, 1600)
+      e.preventDefault()
+      return
+    }
+    if (e.key === 'Enter' && openJson(sel.r, sel.c)) {
       e.preventDefault()
       return
     }
@@ -125,7 +142,7 @@ export function DataGrid({
                       />
                     )}
                     <span className="min-w-0 truncate text-soft">{c.name}</span>
-                    <span className="ml-auto shrink-0 text-2xs text-dim">{c.type}</span>
+                    <span className="ml-auto shrink-0 text-2xs text-sql-type">{c.type}</span>
                     {sort?.col === i &&
                       (sort.dir === 1 ? (
                         <ArrowUp className="size-3 shrink-0 text-quiet" />
@@ -167,20 +184,42 @@ export function DataGrid({
                   </td>
                   {row.map((v, c) => {
                     const active = rowSel && sel?.c === c
+                    const kind = kinds[c]!
+                    const json = kind === 'json' && v != null
                     return (
                       <td
                         key={c}
                         data-cell={`${r}:${c}`}
                         onMouseDown={() => setSel({ r, c })}
+                        onDoubleClick={() => openJson(r, c)}
                         className={cn(
-                          'h-7 truncate border-r border-b border-border-subtle px-2.5 whitespace-nowrap',
-                          NUMERIC.test(columns[c]?.type ?? '') && 'text-right',
+                          'group/cell h-7 truncate border-r border-b border-border-subtle px-2.5 whitespace-nowrap',
+                          kind === 'number' && 'text-right',
+                          json && 'relative pr-7',
                           active &&
-                            'bg-status-run/25 text-foreground outline outline-1 -outline-offset-1 outline-status-run',
-                          !active && (v == null ? 'text-dim italic' : 'text-soft')
+                            'bg-status-run/25 outline outline-1 -outline-offset-1 outline-status-run',
+                          v == null ? 'text-dim italic' : VALUE_CLASS[kind]
                         )}
                       >
-                        {v ?? '<null>'}
+                        {v == null ? '<null>' : json ? <JsonInline text={v} /> : v}
+                        {json && (
+                          <button
+                            type="button"
+                            aria-label="View JSON"
+                            title="View JSON (Enter)"
+                            onMouseDown={(e) => e.stopPropagation()}
+                            onClick={() => {
+                              setSel({ r, c })
+                              openJson(r, c)
+                            }}
+                            className={cn(
+                              'absolute top-1/2 right-1 grid size-5 -translate-y-1/2 place-items-center rounded text-quiet hover:bg-secondary hover:text-foreground',
+                              active ? 'grid' : 'hidden group-hover/cell:grid'
+                            )}
+                          >
+                            <Braces className="size-3.5" />
+                          </button>
+                        )}
                       </td>
                     )
                   })}
@@ -198,6 +237,13 @@ export function DataGrid({
           {rows.length.toLocaleString()} row{rows.length === 1 ? '' : 's'}
         </span>
       </div>
+      <JsonViewer
+        target={viewing}
+        onClose={() => {
+          setViewing(null)
+          scroller.current?.focus()
+        }}
+      />
     </div>
   )
 }

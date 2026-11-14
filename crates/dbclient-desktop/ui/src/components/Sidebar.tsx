@@ -551,7 +551,7 @@ function useNodes(): Node[] {
                 mono: true,
                 meta: (
                   <span className="font-mono">
-                    {c.type}
+                    <span className="text-sql-type">{c.type}</span>
                     {c.nullable ? '' : ' not null'}
                   </span>
                 ),

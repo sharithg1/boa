@@ -66,6 +66,28 @@ describe('tokenize', () => {
       'param::p'
     ])
   })
+
+  it('colours type phrases and anything after a cast', () => {
+    expect(kinds('created timestamp with time zone, x::regclass, y::mood, z::text[]')).toEqual([
+      'plain:created',
+      'type:timestamp',
+      'type:with',
+      'type:time',
+      'type:zone',
+      'plain:, x',
+      'operator:::',
+      'type:regclass',
+      'plain:, y',
+      'operator:::',
+      'type:mood',
+      'plain:, z',
+      'operator:::',
+      'type:text',
+      'operator:[]'
+    ])
+    // `with` that does not continue a type stays a keyword.
+    expect(kinds('with time')[0]).toBe('keyword:with')
+  })
 })
 
 describe('quoteIdent', () => {

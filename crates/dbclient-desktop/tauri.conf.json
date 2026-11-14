@@ -1,6 +1,6 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "DB Client",
+  "productName": "Boa",
   "version": "0.1.0",
   "identifier": "dev.dbclient.desktop",
   "build": {
@@ -20,7 +20,7 @@
     "windows": [
       {
         "label": "main",
-        "title": "DB Client",
+        "title": "Boa",
         "width": 1280,
         "height": 820,
         "minWidth": 720,

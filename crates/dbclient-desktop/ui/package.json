@@ -3,7 +3,7 @@
   "private": true,
   "version": "0.1.0",
   "type": "module",
-  "description": "DB client desktop frontend (React), hosted by the Tauri shell in ../",
+  "description": "Boa desktop frontend (React), hosted by the Tauri shell in ../",
   "scripts": {
     "dev": "cd .. && tauri dev",
     "dev:web": "vite",

@@ -74,7 +74,7 @@ async fn open_session(
         .port(config.port)
         .user(&config.user)
         .dbname(database)
-        .application_name("dbclient")
+        .application_name("boa")
         .connect_timeout(Duration::from_secs(10))
         .ssl_mode(match config.ssl_mode {
             SslMode::Disable => tokio_postgres::config::SslMode::Disable,

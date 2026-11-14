@@ -1,4 +1,4 @@
-# DB Client
+# Boa
 
 A desktop database client: Tauri (Rust) shell with a React + Tailwind UI.
 The chrome (sidebar, title-bar tabs, right panel, status bar, ⌘K palette,

@@ -8,7 +8,7 @@ import { forwardRef, memo } from 'react'
 import { cn } from '@/lib/utils'
 import { tokenize, type Catalog, type TokenKind } from '@/lib/sql'
 
-const CLASS: Record<TokenKind, string> = {
+export const CLASS: Record<TokenKind, string> = {
   keyword: 'text-sql-keyword',
   type: 'text-sql-type',
   function: 'text-sql-function',

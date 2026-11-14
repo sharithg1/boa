@@ -19,6 +19,7 @@
     "allow-list-schemas",
     "allow-introspect",
     "allow-run-query",
-    "allow-cancel-query"
+    "allow-cancel-query",
+    "allow-apply-edits"
   ]
 }

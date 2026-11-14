@@ -44,6 +44,7 @@ import {
 } from '@/components/ui/dropdown-menu'
 import { Kbd } from './chrome'
 import { DataGrid } from './DataGrid'
+import { cachedEditPage, useTableEdits } from './TableEdits'
 import { IconButton } from './IconButton'
 import { Spinner } from '@/components/ui/spinner'
 import { SqlHighlight, type EditorMark } from './SqlHighlight'
@@ -545,10 +546,23 @@ function TableView({
   const connected = useStore((s) => s.connections[connectionId]?.state === 'connected')
   const rowLimit = usePrefs((s) => s.rowLimit)
   const [nonce, setNonce] = useState(0)
-  const [page, setPage] = useState({ offset: 0, rowLimit, table: '' })
+  // Pending grid edits keep their page across tab switches (no reload under them).
+  const [page, setPage] = useState(() => {
+    const c = cachedEditPage(tab.id)
+    return c
+      ? {
+          offset: c.offset,
+          rowLimit: c.rowLimit,
+          table: `select * from ${qualified(tab.schema, tab.table)}`
+        }
+      : { offset: 0, rowLimit, table: '' }
+  })
   const [paging, setPaging] = useState(false)
   const [filter, setFilter] = useState('')
-  const [load, setLoad] = useState<Load>({ state: 'loading' })
+  const [load, setLoad] = useState<Load>(() => {
+    const c = cachedEditPage(tab.id)
+    return c ? { state: 'ok', result: c.result } : { state: 'loading' }
+  })
   const table = findTable(connectionId, database, tab.schema, tab.table)
   const select = `select * from ${qualified(tab.schema, tab.table)}`
   // A new page size (or table) starts over from the first page.
@@ -558,6 +572,8 @@ function TableView({
   // biome-ignore lint/correctness/useExhaustiveDependencies: nonce forces a reload
   useEffect(() => {
     if (!connected) return
+    const cached = cachedEditPage(tab.id)
+    if (cached && cached.offset === offset && cached.rowLimit === rowLimit) return
     let stale = false
     setLoad((l) => (l.state === 'ok' ? l : { state: 'loading' }))
     setPaging(true)
@@ -571,11 +587,18 @@ function TableView({
     }
   }, [connectionId, database, select, rowLimit, offset, connected, nonce])
 
-  const rows = load.state === 'ok' ? load.result.rows : []
-  const shown = useMemo(() => {
-    const q = filter.trim().toLowerCase()
-    return q ? rows.filter((r) => r.some((v) => v?.toLowerCase().includes(q))) : rows
-  }, [rows, filter])
+  const edits = useTableEdits({
+    tabId: tab.id,
+    connectionId,
+    database,
+    schema: tab.schema,
+    table,
+    result: load.state === 'ok' ? load.result : null,
+    offset,
+    rowLimit,
+    filter,
+    onSubmitted: () => setNonce((n) => n + 1)
+  })
 
   return (
     <div className="flex h-full flex-col overflow-hidden">
@@ -584,7 +607,7 @@ function TableView({
           label="Reload"
           side="bottom"
           disabled={!connected || paging}
-          onClick={() => setNonce((n) => n + 1)}
+          onClick={() => edits.guard('reload', () => setNonce((n) => n + 1))}
         >
           <RefreshCw className="size-3.5" />
         </IconButton>
@@ -595,7 +618,7 @@ function TableView({
             pageSize={rowLimit}
             more={load.result.truncated}
             busy={paging}
-            onPage={setOffset}
+            onPage={(o) => edits.guard('change the page', () => setOffset(o))}
           />
         )}
         <span className="px-1.5 text-xs text-dim">
@@ -606,6 +629,7 @@ function TableView({
               : ''}
           {table && table.rows > 0 ? ` · ~${table.rows.toLocaleString()} total` : ''}
         </span>
+        {edits.toolbar}
         <Sep />
         <label className="flex h-6 min-w-0 max-w-[320px] flex-1 items-center gap-1.5 rounded-md border border-input bg-field px-2">
           <Search className="size-3 shrink-0 text-dim" />
@@ -648,11 +672,13 @@ function TableView({
         <DataGrid
           key={`${nonce}-${offset}`}
           columns={load.result.columns}
-          rows={shown}
+          rows={edits.rows}
           firstRow={filter.trim() ? 1 : offset + 1}
           pk={table?.columns.filter((c) => c.pk).map((c) => c.name)}
+          editing={edits.editing}
         />
       )}
+      {edits.dialogs}
     </div>
   )
 }

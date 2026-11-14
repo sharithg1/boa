@@ -19,6 +19,21 @@ are saved in the app config dir (`connections.json`), passwords too, in
 plain text for now (the file is owner-only on Unix). In a plain browser (`dev:web`) a mock backend serves the sample
 data in `ui/src/state/mock.ts`.
 
+Table data is editable like DataGrip's data editor, for tables with a
+primary key (views, key-less tables and console results stay read-only and
+say why). Double-click, Enter or start typing to edit a cell (⇧↵ opens a
+larger editor for long text / JSON), ⌘⌥N sets NULL (not the same as an
+empty string), ⌘N adds a row (untouched columns are left out of the
+`INSERT`, so defaults apply), ⌘⌫ deletes the row, ⌘⌥Z reverts; also from the
+right-click menu. Changes are only staged, tinted per kind and kept per tab,
+until Submit: the preview (⌘↵) shows the exact statements (`UPDATE` /
+`DELETE` by the row's original key, `INSERT`), which then run in one
+transaction (or a savepoint inside an open one). Each `UPDATE` / `DELETE`
+must hit exactly one row; any error rolls everything back and points at the
+failing statement. Reloading, paging or closing a tab with pending changes
+asks first. In the browser mock, submitted edits persist until the page is
+refreshed.
+
 ## Layout
 
 ```
@@ -28,7 +43,8 @@ crates/dbclient-desktop/ui/      React frontend (Vite, Tailwind v4, shadcn/ui)
   src/state/mock.ts              sample connections / schemas
   src/state/mockData.ts          generated rows for the browser mock
   src/lib/backend.ts             Tauri commands (or the browser mock)
-crates/dbclient-desktop/src/     pg.rs (sessions, introspection, queries), connections.rs (saved settings + passwords)
+crates/dbclient-desktop/src/     pg.rs (sessions, introspection, queries), connections.rs (saved settings + passwords),
+                                 edits.rs (submitting grid edits)
   src/components/                Sidebar, TitleBar, Workspace, BottomPanel, DataGrid, RightPanel, StatusBar, …
 ```
 

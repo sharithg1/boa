@@ -6,6 +6,7 @@ import { RightPanel } from './components/RightPanel'
 import { SettingsView } from './components/SettingsView'
 import { Sidebar, newQueryTarget } from './components/Sidebar'
 import { StatusBar } from './components/StatusBar'
+import { DiscardEditsDialog } from './components/TableEdits'
 import { TitleBar } from './components/TitleBar'
 import { Toasts } from './components/Toasts'
 import { Workspace } from './components/Workspace'
@@ -48,6 +49,7 @@ export function App() {
       <CommandPalette />
       <ConnectionDialog />
       <PasswordPrompt />
+      <DiscardEditsDialog />
       <Toasts />
     </div>
   )

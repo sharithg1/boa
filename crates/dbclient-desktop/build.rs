@@ -15,6 +15,7 @@ const COMMANDS: &[&str] = &[
     "introspect",
     "run_query",
     "cancel_query",
+    "apply_edits",
 ];
 
 fn main() {

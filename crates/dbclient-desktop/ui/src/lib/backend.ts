@@ -8,6 +8,8 @@ import { invoke, isTauri } from '@tauri-apps/api/core'
 import { execute } from '@/state/mockData'
 import { sampleConnections } from '@/state/mock'
 import type { ResultColumn, Schema } from '@/state/types'
+import type { EditStatement } from './gridEdits'
+import { applyMockEdits } from '@/state/mockEdits'
 
 export type SslMode = 'disable' | 'prefer' | 'require' | 'verify-full'
 
@@ -55,6 +57,17 @@ export function toBackendError(e: unknown): BackendError {
   return { message: String(e) }
 }
 
+/** Result of submitting grid edits (`applyEdits`). */
+export type ApplyOutcome = {
+  /** Statements that ran, in order (rolled back again if one failed). */
+  runs: { affected: number; ms: number }[]
+  /** The statement that failed; everything was rolled back. */
+  failed: { index: number; error: BackendError } | null
+  /** Ran inside the user's open transaction (under a savepoint, not committed). */
+  inTransaction: boolean
+  ms: number
+}
+
 export type Backend = {
   /** False for the in-browser mock. */
   real: boolean
@@ -79,6 +92,11 @@ export type Backend = {
     offset?: number
   ): Promise<QueryResult>
   cancelQuery(id: string, database: string): Promise<void>
+  /**
+   * Runs the data editor's statements as one unit: all or nothing, each
+   * `exactlyOne` statement must affect exactly one row.
+   */
+  applyEdits(id: string, database: string, statements: EditStatement[]): Promise<ApplyOutcome>
 }
 
 const tauriBackend: Backend = {
@@ -94,7 +112,8 @@ const tauriBackend: Backend = {
   introspect: (id, database, schemas) => invoke('introspect', { id, database, schemas }),
   runQuery: (id, database, sql, limit, offset = 0) =>
     invoke('run_query', { id, database, sql, limit, offset }),
-  cancelQuery: (id, database) => invoke('cancel_query', { id, database })
+  cancelQuery: (id, database) => invoke('cancel_query', { id, database }),
+  applyEdits: (id, database, statements) => invoke('apply_edits', { id, database, statements })
 }
 
 // ── In-browser mock ───────────────────────────────────────────────────────
@@ -181,6 +200,10 @@ function mockBackend(): Backend {
     },
     cancelQuery: async (id, database) => {
       cancelled.add(`${id}\u0000${database}`)
+    },
+    applyEdits: async (id, database, statements) => {
+      await sleep(150)
+      return applyMockEdits(dbOf(id, database), statements)
     }
   }
 }

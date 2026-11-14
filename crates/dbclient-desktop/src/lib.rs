@@ -5,6 +5,7 @@
 //! in `ui/` as Tauri commands (see `ui/src/lib/backend.ts`).
 
 mod connections;
+mod edits;
 mod error;
 mod pg;
 
@@ -134,6 +135,18 @@ async fn cancel_query(pg: State<'_, Pg>, id: String, database: String) -> CmdRes
     pg.cancel(&id, &database).await
 }
 
+/// Runs the data editor's generated statements in one transaction (or a
+/// savepoint inside the user's); reports the failing one and rolls back.
+#[tauri::command]
+async fn apply_edits(
+    pg: State<'_, Pg>,
+    id: String,
+    database: String,
+    statements: Vec<edits::EditStatement>,
+) -> CmdResult<edits::ApplyOutcome> {
+    pg.apply_edits(&id, &database, &statements).await
+}
+
 fn init_logging() {
     let filter = tracing_subscriber::EnvFilter::try_from_env("DBCLIENT_LOG")
         .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"));
@@ -163,7 +176,8 @@ pub fn run() {
             list_schemas,
             introspect,
             run_query,
-            cancel_query
+            cancel_query,
+            apply_edits
         ])
         .run(tauri::generate_context!())
         .expect("error while running the app");

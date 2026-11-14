@@ -1,118 +1,104 @@
-# Boa
+<h1 align="center">
+  <img src="crates/boa-desktop/icons/icon.png" alt="Boa" width="64" valign="middle" /> Boa
+</h1>
 
-A desktop database client: Tauri (Rust) shell with a React + Tailwind UI.
-The chrome (sidebar, title-bar tabs, right panel, status bar, ⌘K palette,
-settings) is carried over from Civet's design.
+<p align="center">
+  <a href="https://github.com/sharithg1/boa/releases/latest"><img src="https://img.shields.io/github/v/release/sharithg1/boa?style=flat&color=08C" alt="Latest release" /></a>
+  <img src="https://img.shields.io/badge/macOS%20app%20%C2%B7%20PostgreSQL-4493F8?style=flat" alt="macOS app, PostgreSQL" />
+  <img src="https://img.shields.io/badge/built%20with-Rust%20%2B%20Tauri-orange?style=flat" alt="Built with Rust and Tauri" />
+</p>
 
-Panels follow DataGrip: a Database Explorer tree (connection › database ›
-schema › tables › columns), the editor (query consoles and table data
-editors), a full-width Database Output panel (result grids + Output log, ⌥J)
-and breadcrumbs in the status bar.
+<p align="center">
+  <strong>A fast, native database client for your Mac.</strong><br/>
+  Browse schemas, write SQL, edit rows and export results,<br/>
+  in a small, quick Rust app that is careful with production.
+</p>
 
-Status: **PostgreSQL only**. Add a data source (⌘O, or + in the explorer;
-a `postgresql://` URL fills the form), connect, browse schemas / tables /
-columns, open table data and run statements (⌘↵) from a console. Like
-DataGrip, only picked databases and schemas are shown and introspected:
-click the "N of M" badge on a connection or database (defaults: the
-connection's database, the `public` schema). Settings
-are saved in the app config dir (`connections.json`), passwords too, in
-plain text for now (the file is owner-only on Unix). In a plain browser (`dev:web`) a mock backend serves the sample
-data in `ui/src/state/mock.ts`.
+<h3 align="center"><a href="https://github.com/sharithg1/boa/releases/latest"><ins>Download Boa</ins></a></h3>
 
-CSV export: the Export menu (download icon) on a result grid or table
-toolbar, or "Export to CSV…" on a table / view in the explorer, asks for a
-file and writes the whole result, not just the loaded page: the server
-streams `COPY (<statement>) TO STDOUT WITH (FORMAT csv)` into a temporary
-file that is renamed into place when done (progress and Cancel in the status
-bar; a toast and an Output log line at the end). Only read-only statements
-are re-run this way, in their own transaction, or under a savepoint that is
-rolled back when the session is inside a user transaction (so its
-uncommitted rows are included and a failure leaves it intact). Results of
-statements that change data (`INSERT … RETURNING`) are never re-run: their
-loaded rows are written instead. The same menu copies the loaded page as CSV
-and sets the delimiter (comma, tab, semicolon) and header row. NULL is an
-empty field, an empty string `""`, as in Postgres's COPY. The browser mock
-builds the file from the sample rows (at most 20,000) and downloads it.
+<p align="center">
+  <img width="960" alt="Boa with a console on a production Postgres database and its result grid" src="docs/images/boa.png" />
+</p>
 
-Table data is editable like DataGrip's data editor, for tables with a
-primary key (views, key-less tables and console results stay read-only and
-say why). Double-click, Enter or start typing to edit a cell (⇧↵ opens a
-larger editor for long text / JSON), ⌘⌥N sets NULL (not the same as an
-empty string), ⌘N adds a row (untouched columns are left out of the
-`INSERT`, so defaults apply), ⌘⌫ deletes the row, ⌘⌥Z reverts; also from the
-right-click menu. Changes are only staged, tinted per kind and kept per tab,
-until Submit: the preview (⌘↵) shows the exact statements (`UPDATE` /
-`DELETE` by the row's original key, `INSERT`), which then run in one
-transaction (or a savepoint inside an open one). Each `UPDATE` / `DELETE`
-must hit exactly one row; any error rolls everything back and points at the
-failing statement. Reloading, paging or closing a tab with pending changes
-asks first. In the browser mock, submitted edits persist until the page is
-refreshed.
+## Why Boa
 
-Query History (⌘⌥E, the console toolbar's history button, or "Query
-History" in ⌘K): every statement run from a console is saved per connection
-in the app config dir (`history-<connection id>.jsonl`, JSON lines,
-owner-only; the newest 5,000 kept; deleted with the connection), failed ones
-with their error. Paging through a result does not add entries. Search
-matches words in the SQL as you type, with an errors-only filter and a
-toggle for all connections; ⏎ inserts the statement at the console's caret,
-⌘⏎ opens it in a new console on its database, ⌘C copies, ⌘⌫ deletes. Entries
-can be deleted one by one or cleared, and recording turned off in Settings →
-Queries. The Output log (⌥J) stays a session-only log. In the browser mock
-history lives in `localStorage`.
+The big database IDEs do everything, but they are heavy JVM apps that take a
+while to start and want a project before you can run a query. Boa keeps the
+parts you use every day (the explorer tree, consoles, an editable data grid,
+query history) in a native app built with Rust and Tauri. It also puts guard
+rails where mistakes are expensive: production connections are marked
+everywhere, transactions are visible, and destructive statements ask first.
 
-Transactions and guard rails: each database session (shared by every
-console and table tab on that database) is in **Tx: Auto** (each statement
-commits) or **Manual** mode (a transaction is opened before the first
-statement and stays open until Commit / Rollback: ⌘⇧↵ / ⌘⇧⌫, or typed
-`commit` / `rollback`). After every statement the backend probes the
-server for the real state (idle, open, aborted: 25P02 until rolled back),
-shown in the console toolbar and the status bar; typed `begin` works in
-either mode. Disconnecting, reconnecting (after editing the data source) or
-quitting with a transaction open asks first, and rolls it back. Destructive
-statements (UPDATE / DELETE without WHERE, TRUNCATE, DROP, ALTER TABLE …
-DROP COLUMN; found with the editor's tokenizer, so comments, strings and
-CTEs don't fool it) ask for confirmation; Settings can turn that off,
-except on connections tagged Production. A data source can be marked
-read-only (enforced by the server: `default_transaction_read_only`, and
-put back if a statement turns it off) and given an environment tag and a
-colour, shown on the explorer row, the editor, the console toolbar and the
-status bar.
+## Features
 
-## Layout
+### Explore your schema
+A Database Explorer tree (connection › database › schema › tables ›
+columns), with row counts, showing only the databases and schemas you pick.
+Paste a `postgresql://` URL to add a data source.
 
-```
-crates/boa-desktop/              Tauri app (Rust side: src/lib.rs)
-crates/boa-desktop/ui/           React frontend (Vite, Tailwind v4, shadcn/ui)
-  src/state/store.ts             app state: connections, tabs, panels, toasts
-  src/state/tx.ts, guards.ts     transaction mode / state per session; confirmations
-  src/lib/guard.ts               destructive and read-only statement checks
-  src/state/mock.ts              sample connections / schemas
-  src/state/mockData.ts          generated rows for the browser mock
-  src/lib/backend.ts             Tauri commands (or the browser mock)
-  src/state/history.ts           query history (persisted; QueryHistory.tsx is the view)
-crates/boa-desktop/src/          pg.rs (sessions, introspection, queries), tx.rs (transaction state probe),
-                                 connections.rs (saved settings + passwords), edits.rs (submitting grid edits),
-                                 history.rs (query history)
-  src/components/                Sidebar, TitleBar, Workspace, BottomPanel, DataGrid, RightPanel, StatusBar, …
-```
+### SQL consoles
+Syntax highlighting, context-aware completion from the live schema (tables,
+columns, aliases, CTEs, types), and <kbd>⌘↵</kbd> to run the statement under
+the caret. Results land in a paged grid with column types.
 
-## Run
+### Edit data like a spreadsheet
+Edit cells, add and delete rows in any table with a primary key. Changes are
+staged until you submit, the preview shows the exact SQL, and everything runs
+in one transaction that rolls back on any error.
 
-```sh
-# UI only, in a browser (http://localhost:1420; add ?overlay to preview the macOS title-bar inset)
-pnpm --dir crates/boa-desktop/ui install
-pnpm --dir crates/boa-desktop/ui dev:web
+### Guard rails for production
+Tag a connection Production and give it a colour, shown on the explorer, the
+editor and the status bar. `UPDATE` / `DELETE` without `WHERE`, `DROP` and
+`TRUNCATE` ask for confirmation, and read-only connections are enforced by
+the server.
 
-# Desktop app
-pnpm --dir crates/boa-desktop/ui dev
-```
+### Transactions you can see
+Switch any session between auto-commit and manual mode. The real transaction
+state (idle, open, aborted) is always shown, and Boa asks before
+disconnecting or quitting with one open.
 
-Checks: `pnpm --dir crates/boa-desktop/ui typecheck`, `… lint`, `… test`,
-`cargo clippy --all-targets`, `cargo test`. The live Postgres test runs when
-`PGHOST` (and `PGPORT`, `PGUSER`, `PGPASSWORD`, `PGDATABASE`) point at a
-server; it creates and drops a `boa_test` schema.
+### Query history
+Every statement you run is saved per connection, failures included. Search
+it as you type (<kbd>⌘⌥E</kbd>), then insert a statement into a console or
+open it in a new one.
 
-CI (`.github/workflows/ci.yml`) runs these on every pull request and push to
-`main`. Releases are cut from Actions → Cut release (or
-`scripts/release.sh`); see [docs/RELEASING.md](docs/RELEASING.md).
+### CSV export
+Export the whole result, not just the loaded page. Postgres streams it with
+`COPY`, with progress and cancel in the status bar.
+
+### Picks up where you left off
+Tabs, their SQL, the active tab and the panel layout come back on launch.
+
+The details of each feature are in [docs/USAGE.md](docs/USAGE.md).
+
+## Supported databases
+
+**PostgreSQL** today.
+
+## Install
+
+1. Download the `.dmg` for your Mac (Apple silicon or Intel) from the
+   [latest release](https://github.com/sharithg1/boa/releases/latest) and
+   drag Boa to Applications.
+2. If macOS says the app cannot be opened (unsigned builds), run once:
+
+   ```sh
+   xattr -dr com.apple.quarantine /Applications/Boa.app
+   ```
+
+3. Open Boa, press <kbd>⌘O</kbd> and add a data source.
+
+## How it works
+
+Boa is a Tauri app. The Rust side owns the database sessions: it connects
+with `tokio-postgres`, introspects schemas, runs statements through a
+server-side cursor so large results page in, and probes the transaction
+state after every statement. The UI is React in the system WebView, so the
+app stays small. Connections and query history are stored in the app's
+config directory.
+
+## Development
+
+Building from source, the layout, checks and the browser mock: see
+[docs/DEVELOPMENT.md](docs/DEVELOPMENT.md). Releases:
+[docs/RELEASING.md](docs/RELEASING.md).

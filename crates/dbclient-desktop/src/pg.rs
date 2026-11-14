@@ -450,6 +450,17 @@ impl Pg {
         }
     }
 
+    /// Applies grid edits as one unit (see `edits::apply`).
+    pub async fn apply_edits(
+        &self,
+        id: &str,
+        database: &str,
+        statements: &[crate::edits::EditStatement],
+    ) -> CmdResult<crate::edits::ApplyOutcome> {
+        let s = self.session(id, database).await?;
+        crate::edits::apply(&s.client, &s.in_tx, statements).await
+    }
+
     pub async fn cancel(&self, id: &str, database: &str) -> CmdResult<()> {
         let s = self
             .sessions
@@ -735,6 +746,90 @@ mod tests {
         };
         let (r, ()) = tokio::join!(slow, cancel);
         assert_eq!(r.unwrap_err().code.as_deref(), Some("57014"));
+
+        // Grid edits: one transaction, exactly one row each, rolled back on failure.
+        use crate::edits::EditStatement;
+        let st = |sql: &str| EditStatement {
+            sql: sql.into(),
+            exactly_one: true,
+        };
+        let count = || async {
+            pg.query(
+                "test",
+                &db,
+                r#"select count(*) from dbclient_test."Mixed""#,
+                10,
+                0,
+            )
+            .await
+            .unwrap()
+            .rows[0][0]
+                .clone()
+                .unwrap()
+        };
+        let out = pg
+            .apply_edits(
+                "test",
+                &db,
+                &[
+                    st(r#"DELETE FROM dbclient_test."Mixed" WHERE id = '1'"#),
+                    st(r#"UPDATE dbclient_test."Mixed" SET note = E'it''s \\ x' WHERE id = '2'"#),
+                    st(r#"INSERT INTO dbclient_test."Mixed" (id) VALUES ('500')"#),
+                ],
+            )
+            .await
+            .unwrap();
+        assert!(out.failed.is_none() && !out.in_transaction);
+        assert_eq!(out.runs.len(), 3);
+        assert_eq!(count().await, "26");
+        let note = pg
+            .query("test", &db, r#"select note, at is not null from dbclient_test."Mixed" where id in (2, 500) order by id"#, 10, 0)
+            .await
+            .unwrap();
+        assert_eq!(note.rows[0][0].as_deref(), Some("it's \\ x"));
+        assert_eq!(note.rows[1][1].as_deref(), Some("t"));
+        // A missing row fails the batch and undoes the earlier statements.
+        let out = pg
+            .apply_edits(
+                "test",
+                &db,
+                &[
+                    st(r#"DELETE FROM dbclient_test."Mixed" WHERE id = '3'"#),
+                    st(r#"UPDATE dbclient_test."Mixed" SET note = 'x' WHERE id = '9999'"#),
+                ],
+            )
+            .await
+            .unwrap();
+        let f = out.failed.unwrap();
+        assert_eq!(f.index, 1);
+        assert_eq!(f.error.code.as_deref(), Some("row_count"));
+        assert_eq!(count().await, "26");
+        // Inside a user transaction: a savepoint, nothing committed.
+        q("begin", 10).await.unwrap();
+        let out = pg
+            .apply_edits(
+                "test",
+                &db,
+                &[
+                    st(r#"INSERT INTO dbclient_test."Mixed" (id) VALUES ('1')"#),
+                    st("select 1/0"),
+                ],
+            )
+            .await
+            .unwrap();
+        assert!(out.in_transaction);
+        assert_eq!(out.failed.unwrap().error.code.as_deref(), Some("22012"));
+        assert_eq!(count().await, "26");
+        pg.apply_edits(
+            "test",
+            &db,
+            &[st(r#"DELETE FROM dbclient_test."Mixed" WHERE id = '500'"#)],
+        )
+        .await
+        .unwrap();
+        assert_eq!(count().await, "25");
+        q("rollback", 10).await.unwrap();
+        assert_eq!(count().await, "26");
 
         q("drop schema dbclient_test cascade", 10).await.unwrap();
         pg.disconnect("test").await;

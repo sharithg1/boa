@@ -270,7 +270,14 @@ export function pinTab(key: string, id: string) {
   }))
 }
 
-export function closeTab(key: string, id: string) {
+/** Asked before a tab closes; returning false keeps it open (the guard may close it later). */
+let closeGuard: ((key: string, id: string) => boolean) | null = null
+export function setCloseGuard(g: (key: string, id: string) => boolean) {
+  closeGuard = g
+}
+
+export function closeTab(key: string, id: string, { force = false }: { force?: boolean } = {}) {
+  if (!force && closeGuard && !closeGuard(key, id)) return
   cancelQuery(id)
   useStore.setState((s) => {
     if (!s.results[id]) return {}
@@ -631,6 +638,11 @@ export async function runQuery(
       return { running }
     })
   }
+}
+
+/** Adds a run that didn't go through `runQuery` (grid edits) to the Output log. */
+export function logRun(connectionId: string, entry: Omit<HistoryEntry, 'id'>) {
+  log(connectionId, { ...entry, id: nextId++ })
 }
 
 /** Asks the server to cancel the tab's running statement (it then fails with 57014). */

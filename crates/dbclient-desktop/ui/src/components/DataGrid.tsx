@@ -5,13 +5,52 @@
 // floating row-count pill. Values are coloured by column type (numbers,
 // booleans, dates, uuids, JSON token by token); a JSON cell opens in the
 // JSON viewer on double-click, Enter or its hover button.
-import { useMemo, useRef, useState, type KeyboardEvent, type PointerEvent } from 'react'
+//
+// With `editing` (table tabs of tables with a primary key) it is DataGrip's
+// data editor: double-click, Enter or typing edits a cell (⇧↵ opens the
+// larger value editor), ⌘⌥N sets NULL, ⌘N adds a row, ⌘⌫ deletes the row,
+// ⌘⌥Z reverts, ⌘↵ submits; also from the right-click menu. Changed cells,
+// new and deleted rows are tinted; the changes themselves live outside.
+import { useEffect, useMemo, useRef, useState, type KeyboardEvent, type PointerEvent } from 'react'
 import { ArrowDown, ArrowUp, Braces, KeyRound } from 'lucide-react'
+import {
+  ContextMenu,
+  ContextMenuContent,
+  ContextMenuItem,
+  ContextMenuSeparator,
+  ContextMenuShortcut,
+  ContextMenuTrigger
+} from '@/components/ui/context-menu'
+import type { RowMark } from '@/lib/gridEdits'
 import { cn } from '@/lib/utils'
 import { pushToast } from '@/state/store'
 import type { ResultColumn } from '@/state/types'
 import { VALUE_CLASS, valueKind } from '@/lib/values'
 import { JsonInline, JsonViewer, type JsonTarget } from './JsonViewer'
+import { ValueEditor, type ValueTarget } from './ValueEditor'
+
+/** Editing hooks of the data editor; `r` is an index into `rows`. */
+export type GridEditing = {
+  rowMark: (r: number) => RowMark
+  cellEdited: (r: number, c: number) => boolean
+  /** Shown instead of an untouched new-row value (`<default>`). */
+  placeholder: (r: number, c: number) => string | undefined
+  set: (r: number, c: number, value: string | null) => void
+  revertCell: (r: number, c: number) => void
+  revertRow: (r: number) => void
+  deleteRow: (r: number) => void
+  addRow: () => void
+  /** How many new rows there are (a new one gets selected). */
+  newRows: number
+  /** ⌘↵: preview and submit the changes. */
+  submit: () => void
+  /** The selected row changed (null: none). */
+  onSelectRow?: (r: number | null) => void
+}
+
+const mac = () => typeof navigator !== 'undefined' && /mac/i.test(navigator.platform)
+const MOD = mac() ? '⌘' : 'Ctrl+'
+const ALT = mac() ? '⌥' : 'Alt+'
 
 type Sort = { col: number; dir: 1 | -1 } | null
 
@@ -25,7 +64,8 @@ export function DataGrid({
   columns,
   rows,
   pk,
-  firstRow = 1
+  firstRow = 1,
+  editing
 }: {
   columns: ResultColumn[]
   rows: (string | null)[][]
@@ -33,6 +73,8 @@ export function DataGrid({
   firstRow?: number
   /** Primary-key column names, marked with a key in the header. */
   pk?: string[]
+  /** Makes the grid an editor (table tabs only). */
+  editing?: GridEditing
 }) {
   const [sort, setSort] = useState<Sort>(null)
   const [sel, setSel] = useState<{ r: number; c: number } | null>(null)
@@ -40,6 +82,14 @@ export function DataGrid({
     columns.map((c, i) => initialWidth(c, rows, i))
   )
   const [viewing, setViewing] = useState<JsonTarget | null>(null)
+  /** Inline cell editor (view coordinates); `touched` once the text changed. */
+  const [editor, setEditor] = useState<{
+    r: number
+    c: number
+    text: string
+    touched: boolean
+  } | null>(null)
+  const [big, setBig] = useState<(ValueTarget & { ri: number; c: number }) | null>(null)
   const kinds = useMemo(() => columns.map((c) => valueKind(c.type)), [columns])
   const scroller = useRef<HTMLDivElement>(null)
   const resize = useRef<{ i: number; x: number; w: number } | null>(null)
@@ -57,6 +107,113 @@ export function DataGrid({
     })
   }, [rows, kinds, sort])
 
+  const selRow = sel ? (view[sel.r] ?? null) : null
+  const onSelectRow = editing?.onSelectRow
+  useEffect(() => onSelectRow?.(selRow), [onSelectRow, selRow])
+
+  const select = (r: number, c: number) => {
+    setSel({ r, c })
+    scroller.current
+      ?.querySelector<HTMLElement>(`[data-cell="${r}:${c}"]`)
+      ?.scrollIntoView({ block: 'nearest', inline: 'nearest' })
+  }
+
+  // A newly added row (the last of `rows`) gets selected and focused.
+  const newRows = editing?.newRows ?? 0
+  const prevNewRows = useRef(newRows)
+  // biome-ignore lint/correctness/useExhaustiveDependencies: runs when a row is added
+  useEffect(() => {
+    const grew = newRows > prevNewRows.current
+    prevNewRows.current = newRows
+    if (!grew) return
+    const r = view.indexOf(rows.length - 1)
+    if (r < 0) return
+    select(r, 0)
+    scroller.current?.focus()
+  }, [rows])
+
+  const canEdit = (ri: number | undefined) =>
+    !!editing && ri != null && editing.rowMark(ri) !== 'deleted'
+
+  /** Opens the larger value editor on a cell (view coordinates). */
+  const openBig = (r: number, c: number) => {
+    const ri = view[r]
+    const col = columns[c]
+    if (!canEdit(ri) || !col) return false
+    setBig({
+      ri: ri!,
+      c,
+      column: col.name,
+      type: col.type,
+      row: firstRow + r,
+      value: editing!.placeholder(ri!, c) ? null : (rows[ri!]?.[c] ?? null),
+      json: kinds[c] === 'json'
+    })
+    return true
+  }
+
+  /** Starts editing a cell in place (`initial`: the key typed to start). */
+  const startEdit = (r: number, c: number, initial?: string) => {
+    const ri = view[r]
+    if (!canEdit(ri)) return false
+    const v = editing!.placeholder(ri!, c) ? null : (rows[ri!]?.[c] ?? null)
+    if (
+      initial === undefined &&
+      v != null &&
+      (v.includes('\n') || v.length > 200 || kinds[c] === 'json')
+    )
+      return openBig(r, c)
+    setSel({ r, c })
+    setEditor({ r, c, text: initial ?? v ?? '', touched: initial !== undefined })
+    return true
+  }
+
+  const finishEdit = (save: boolean, move?: [number, number]) => {
+    const ed = editor
+    if (!ed) return
+    setEditor(null)
+    const ri = view[ed.r]
+    if (save && ed.touched && ri != null) editing?.set(ri, ed.c, ed.text)
+    if (move)
+      select(
+        Math.max(0, Math.min(view.length - 1, ed.r + move[0])),
+        Math.max(0, Math.min(columns.length - 1, ed.c + move[1]))
+      )
+    scroller.current?.focus()
+  }
+
+  const setNull = (r: number, c: number) => {
+    const ri = view[r]
+    if (canEdit(ri)) editing!.set(ri!, c, null)
+  }
+
+  const revert = (r: number, c: number) => {
+    const ri = view[r]
+    if (!editing || ri == null) return
+    if (editing.cellEdited(ri, c)) editing.revertCell(ri, c)
+    else editing.revertRow(ri)
+  }
+
+  const addRow = () => editing?.addRow()
+
+  /** Edit shortcuts on the selected cell; true when handled. */
+  const editKey = (e: KeyboardEvent, r: number, c: number): boolean => {
+    if (!editing) return false
+    const mod = e.metaKey || e.ctrlKey
+    if (mod && e.altKey && e.code === 'KeyN') setNull(r, c)
+    else if (mod && e.altKey && e.code === 'KeyZ') revert(r, c)
+    else if ((mod && e.code === 'KeyN') || (e.altKey && e.key === 'Insert')) addRow()
+    else if ((mod && e.key === 'Backspace') || e.key === 'Delete') {
+      const ri = view[r]
+      if (ri != null) editing.deleteRow(ri)
+    } else if (mod && e.key === 'Enter') editing.submit()
+    else if (e.key === 'Enter' && e.shiftKey) openBig(r, c)
+    else if (e.key === 'Enter' || e.key === 'F2') startEdit(r, c)
+    else if (e.key.length === 1 && !mod && !e.altKey) startEdit(r, c, e.key)
+    else return false
+    return true
+  }
+
   /** Opens the JSON viewer on a cell (view coordinates) if it holds JSON. */
   const openJson = (r: number, c: number) => {
     const v = rows[view[r]!]?.[c]
@@ -70,11 +227,20 @@ export function DataGrid({
     setSort((s) => (s?.col !== col ? { col, dir: 1 } : s.dir === 1 ? { col, dir: -1 } : null))
 
   const onKeyDown = (e: KeyboardEvent) => {
-    if (!sel) return
+    if (editing && !sel && (e.metaKey || e.ctrlKey) && e.code === 'KeyN') {
+      e.preventDefault()
+      addRow()
+      return
+    }
+    if (!sel || editor) return
     if ((e.metaKey || e.ctrlKey) && e.key === 'c') {
       const v = rows[view[sel.r]!]?.[sel.c]
       void navigator.clipboard?.writeText(v ?? '').catch(() => {})
       pushToast({ kind: 'info', title: 'Copied value' }, 1600)
+      e.preventDefault()
+      return
+    }
+    if (editKey(e, sel.r, sel.c)) {
       e.preventDefault()
       return
     }
@@ -107,7 +273,8 @@ export function DataGrid({
   }
 
   const total = widths.reduce((a, b) => a + b, 0) + 48
-  return (
+  const selMark = editing && selRow != null ? editing.rowMark(selRow) : undefined
+  const body = (
     <div className="relative flex min-h-0 flex-1 flex-col">
       <div
         ref={scroller}
@@ -175,36 +342,100 @@ export function DataGrid({
             {view.map((ri, r) => {
               const row = rows[ri]!
               const rowSel = sel?.r === r
+              const mark = editing?.rowMark(ri)
               return (
-                <tr key={ri} className={cn(rowSel ? 'bg-hover' : 'hover:bg-hover')}>
+                <tr
+                  key={ri}
+                  className={cn(
+                    rowSel ? 'bg-hover' : 'hover:bg-hover',
+                    mark === 'inserted' && 'bg-status-ok/10',
+                    mark === 'deleted' && 'bg-status-err/10 line-through decoration-status-err/70'
+                  )}
+                >
                   <td
+                    title={
+                      mark === 'inserted'
+                        ? 'New row'
+                        : mark === 'deleted'
+                          ? 'Deleted row'
+                          : mark === 'updated'
+                            ? 'Changed row'
+                            : undefined
+                    }
                     className={cn(
                       'sticky left-0 h-7 border-r border-b border-border-subtle bg-background px-2 text-right text-2xs',
-                      rowSel ? 'text-soft' : 'text-dim'
+                      rowSel ? 'text-soft' : 'text-dim',
+                      mark === 'inserted' && 'text-status-ok',
+                      mark === 'deleted' && 'text-status-err',
+                      mark === 'updated' && 'text-status-run'
                     )}
                   >
-                    {firstRow + r}
+                    {mark === 'inserted' ? '+' : firstRow + r}
                   </td>
                   {row.map((v, c) => {
                     const active = rowSel && sel?.c === c
                     const kind = kinds[c]!
-                    const json = kind === 'json' && v != null
+                    const placeholder = editing?.placeholder(ri, c)
+                    const json = kind === 'json' && v != null && !placeholder
+                    const edited = editing?.cellEdited(ri, c)
+                    const inline = editor && editor.r === r && editor.c === c
                     return (
                       <td
                         key={c}
                         data-cell={`${r}:${c}`}
                         onMouseDown={() => setSel({ r, c })}
-                        onDoubleClick={() => openJson(r, c)}
+                        onDoubleClick={() => (editing ? startEdit(r, c) : openJson(r, c))}
                         className={cn(
                           'group/cell h-7 truncate border-r border-b border-border-subtle px-2.5 whitespace-nowrap',
                           kind === 'number' && 'text-right',
-                          json && 'relative pr-7',
+                          (json || inline) && 'relative pr-7',
+                          edited && mark !== 'inserted' && 'bg-status-run/20',
                           active &&
                             'bg-status-run/25 outline outline-1 -outline-offset-1 outline-status-run',
-                          v == null ? 'text-dim italic' : VALUE_CLASS[kind]
+                          v == null || placeholder ? 'text-dim italic' : VALUE_CLASS[kind]
                         )}
                       >
-                        {v == null ? '<null>' : json ? <JsonInline text={v} /> : v}
+                        {inline && (
+                          <input
+                            autoFocus
+                            spellCheck={false}
+                            aria-label={`Edit ${columns[c]?.name}`}
+                            value={editor.text}
+                            placeholder={v == null ? '<null>' : ''}
+                            onFocus={(e) => {
+                              if (!editor.touched) e.currentTarget.select()
+                            }}
+                            onChange={(e) =>
+                              setEditor({ ...editor, text: e.target.value, touched: true })
+                            }
+                            onBlur={() => finishEdit(true)}
+                            onKeyDown={(e) => {
+                              e.stopPropagation()
+                              const mod = e.metaKey || e.ctrlKey
+                              if (mod && e.altKey && e.code === 'KeyN') {
+                                e.preventDefault()
+                                setEditor(null)
+                                setNull(r, c)
+                                scroller.current?.focus()
+                              } else if (e.key === 'Enter' && e.shiftKey) {
+                                e.preventDefault()
+                                setEditor(null)
+                                openBig(r, c)
+                              } else if (e.key === 'Enter') {
+                                e.preventDefault()
+                                finishEdit(true)
+                              } else if (e.key === 'Escape') {
+                                e.preventDefault()
+                                finishEdit(false)
+                              } else if (e.key === 'Tab') {
+                                e.preventDefault()
+                                finishEdit(true, [0, e.shiftKey ? -1 : 1])
+                              }
+                            }}
+                            className="absolute inset-0 z-10 bg-field px-2.5 font-mono text-sm text-body no-underline outline outline-2 -outline-offset-2 outline-status-run placeholder:text-dim placeholder:italic"
+                          />
+                        )}
+                        {placeholder ?? (v == null ? '<null>' : json ? <JsonInline text={v} /> : v)}
                         {json && (
                           <button
                             type="button"
@@ -240,6 +471,19 @@ export function DataGrid({
           {rows.length.toLocaleString()} row{rows.length === 1 ? '' : 's'}
         </span>
       </div>
+      <ValueEditor
+        target={big}
+        onApply={(v) => {
+          if (big && v !== (editing?.placeholder(big.ri, big.c) ? null : rows[big.ri]?.[big.c]))
+            editing?.set(big.ri, big.c, v)
+          setBig(null)
+          scroller.current?.focus()
+        }}
+        onClose={() => {
+          setBig(null)
+          scroller.current?.focus()
+        }}
+      />
       <JsonViewer
         target={viewing}
         onClose={() => {
@@ -248,5 +492,58 @@ export function DataGrid({
         }}
       />
     </div>
+  )
+  if (!editing) return body
+  return (
+    <ContextMenu>
+      <ContextMenuTrigger asChild>{body}</ContextMenuTrigger>
+      <ContextMenuContent className="w-[220px]">
+        <ContextMenuItem
+          disabled={!sel || selMark === 'deleted'}
+          onSelect={() => sel && startEdit(sel.r, sel.c)}
+        >
+          Edit<ContextMenuShortcut>↵</ContextMenuShortcut>
+        </ContextMenuItem>
+        <ContextMenuItem
+          disabled={!sel || selMark === 'deleted'}
+          onSelect={() => sel && openBig(sel.r, sel.c)}
+        >
+          Open in editor<ContextMenuShortcut>⇧↵</ContextMenuShortcut>
+        </ContextMenuItem>
+        <ContextMenuItem
+          disabled={!sel || selMark === 'deleted'}
+          onSelect={() => sel && setNull(sel.r, sel.c)}
+        >
+          Set NULL<ContextMenuShortcut>{`${MOD}${ALT}N`}</ContextMenuShortcut>
+        </ContextMenuItem>
+        <ContextMenuSeparator />
+        <ContextMenuItem onSelect={addRow}>
+          Add row<ContextMenuShortcut>{`${MOD}N`}</ContextMenuShortcut>
+        </ContextMenuItem>
+        <ContextMenuItem
+          disabled={selRow == null || selMark === 'deleted'}
+          onSelect={() => selRow != null && editing.deleteRow(selRow)}
+        >
+          Delete row<ContextMenuShortcut>{`${MOD}⌫`}</ContextMenuShortcut>
+        </ContextMenuItem>
+        <ContextMenuSeparator />
+        <ContextMenuItem
+          disabled={!sel || selRow == null || !editing.cellEdited(selRow, sel.c)}
+          onSelect={() => sel && selRow != null && editing.revertCell(selRow, sel.c)}
+        >
+          Revert cell
+        </ContextMenuItem>
+        <ContextMenuItem
+          disabled={selRow == null || !selMark}
+          onSelect={() => selRow != null && editing.revertRow(selRow)}
+        >
+          Revert row<ContextMenuShortcut>{`${MOD}${ALT}Z`}</ContextMenuShortcut>
+        </ContextMenuItem>
+        <ContextMenuSeparator />
+        <ContextMenuItem onSelect={editing.submit}>
+          Preview and submit…<ContextMenuShortcut>{`${MOD}↵`}</ContextMenuShortcut>
+        </ContextMenuItem>
+      </ContextMenuContent>
+    </ContextMenu>
   )
 }

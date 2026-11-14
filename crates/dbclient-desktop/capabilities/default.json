@@ -22,6 +22,7 @@
     "allow-cancel-query",
     "allow-export-csv",
     "allow-write-csv-file",
-    "allow-reveal-path"
+    "allow-reveal-path",
+    "allow-apply-edits"
   ]
 }

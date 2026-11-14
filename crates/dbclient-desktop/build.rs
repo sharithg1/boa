@@ -18,6 +18,7 @@ const COMMANDS: &[&str] = &[
     "export_csv",
     "write_csv_file",
     "reveal_path",
+    "apply_edits",
 ];
 
 fn main() {

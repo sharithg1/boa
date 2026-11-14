@@ -3,6 +3,7 @@
 // `SELECT … FROM [schema.]table [LIMIT n]` to return those rows. Anything
 // else "succeeds" with an affected-rows count.
 import type { Column, Database, ResultColumn, Table } from './types'
+import { editedRows } from './mockEdits'
 
 function hash(s: string): number {
   let h = 2166136261
@@ -162,10 +163,13 @@ export function execute(
   }
   if (!table) return { kind: 'error', message: `relation "${parts.join('.')}" does not exist` }
   const limit = /\blimit\s+(\d+)/i.exec(text)
-  const total = Math.min(limit ? Number(limit[1]) : table.rows, table.rows)
+  // Rows submitted from the data editor (state/mockEdits.ts) replace the samples.
+  const edited = editedRows(db?.name ?? '', schema, table.name)
+  const count = edited?.length ?? table.rows
+  const total = Math.min(limit ? Number(limit[1]) : count, count)
   const end = Math.min(total, offset + rowLimit)
   let columns = tableColumns(table)
-  let rows = sampleRows(table, end).slice(offset)
+  let rows = (edited ?? sampleRows(table, end)).slice(offset, end)
   const list = /^select\s+(.*?)\s+from\b/is.exec(text)?.[1]?.trim()
   if (list && list !== '*') {
     const wanted = list.split(',').map((s) => unquote(s.trim().split('.').pop()!))

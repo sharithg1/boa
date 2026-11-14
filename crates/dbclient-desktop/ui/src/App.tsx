@@ -18,6 +18,7 @@ import {
   newQueryTab,
   useStore
 } from './state/store'
+import { startSession } from './state/session'
 
 export function App() {
   const sidebarOpen = useStore((s) => s.sidebarOpen)
@@ -26,7 +27,10 @@ export function App() {
 
   useShortcuts()
   useEffect(() => {
-    void loadConnections()
+    // The last session's tabs belong to saved connections: restore them after.
+    void loadConnections().then((ok) => {
+      if (ok) startSession()
+    })
   }, [])
 
   return (

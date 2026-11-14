@@ -106,6 +106,11 @@ export function parseTableKey(key: string) {
 let nextId = 1
 const newId = (p: string) => `${p}${nextId++}`
 
+/** Keeps new ids clear of restored ones (state/session.ts): they start at `from` or later. */
+export function reserveIds(from: number) {
+  nextId = Math.max(nextId, from)
+}
+
 // ── Lookups ───────────────────────────────────────────────────────────────
 
 export function findTable(
@@ -350,16 +355,18 @@ export function configOf(c: Connection): ConnConfig {
   }
 }
 
-/** Loads the saved connections (once, at startup). */
-export async function loadConnections() {
+/** Loads the saved connections (once, at startup); false if that failed. */
+export async function loadConnections(): Promise<boolean> {
   try {
     const list = await backend.listConnections()
     useStore.setState((s) => ({
       connections: Object.fromEntries(list.map((c) => [c.id, fromSaved(c, s.connections[c.id])])),
       connectionOrder: list.map((c) => c.id)
     }))
+    return true
   } catch (e) {
     reportError('Could not load connections', e)
+    return false
   }
 }
 

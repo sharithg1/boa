@@ -8,6 +8,7 @@ import { invoke, isTauri } from '@tauri-apps/api/core'
 import { execute } from '@/state/mockData'
 import { sampleConnections } from '@/state/mock'
 import type { ResultColumn, Schema } from '@/state/types'
+import { localHistoryStore, type HistoryRecord } from './history'
 
 export type SslMode = 'disable' | 'prefer' | 'require' | 'verify-full'
 
@@ -79,6 +80,11 @@ export type Backend = {
     offset?: number
   ): Promise<QueryResult>
   cancelQuery(id: string, database: string): Promise<void>
+  /** The connection's saved query history, oldest first. */
+  historyList(id: string): Promise<HistoryRecord[]>
+  historyAppend(id: string, entry: HistoryRecord): Promise<void>
+  historyDelete(id: string, ids: string[]): Promise<void>
+  historyClear(id: string): Promise<void>
 }
 
 const tauriBackend: Backend = {
@@ -94,7 +100,11 @@ const tauriBackend: Backend = {
   introspect: (id, database, schemas) => invoke('introspect', { id, database, schemas }),
   runQuery: (id, database, sql, limit, offset = 0) =>
     invoke('run_query', { id, database, sql, limit, offset }),
-  cancelQuery: (id, database) => invoke('cancel_query', { id, database })
+  cancelQuery: (id, database) => invoke('cancel_query', { id, database }),
+  historyList: (id) => invoke('history_list', { id }),
+  historyAppend: (id, entry) => invoke('history_append', { id, entry }),
+  historyDelete: (id, ids) => invoke('history_delete', { id, ids }),
+  historyClear: (id) => invoke('history_clear', { id })
 }
 
 // ── In-browser mock ───────────────────────────────────────────────────────
@@ -121,6 +131,7 @@ function mockBackend(): Backend {
   const dbOf = (id: string, database: string) =>
     samples.find((c) => c.id === id)?.databases.find((d) => d.name === database)
   const cancelled = new Set<string>()
+  const history = localHistoryStore(typeof localStorage === 'undefined' ? undefined : localStorage)
   return {
     real: false,
     listConnections: async () => [...saved.values()],
@@ -133,6 +144,7 @@ function mockBackend(): Backend {
     },
     deleteConnection: async (id) => {
       saved.delete(id)
+      history.clear(id)
     },
     testConnection: async (config) => {
       await sleep(300)
@@ -181,7 +193,11 @@ function mockBackend(): Backend {
     },
     cancelQuery: async (id, database) => {
       cancelled.add(`${id}\u0000${database}`)
-    }
+    },
+    historyList: async (id) => history.list(id),
+    historyAppend: async (id, entry) => history.append(id, entry),
+    historyDelete: async (id, ids) => history.remove(id, ids),
+    historyClear: async (id) => history.clear(id)
   }
 }
 

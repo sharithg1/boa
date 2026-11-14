@@ -18,6 +18,8 @@ export type Prefs = {
   rowLimit: number
   /** Ask before running UPDATE / DELETE / DROP without a WHERE. */
   confirmDestructive: boolean
+  /** Save every statement run to the connection's query history (on disk). */
+  recordHistory: boolean
   /** Approximate row counts next to tables in the sidebar. */
   sidebarRowCounts: boolean
   /** Show views alongside tables in the sidebar. */
@@ -59,6 +61,7 @@ const KEPT_ON_RESET = [
 export const DEFAULT_PREFS: Prefs = {
   rowLimit: 500,
   confirmDestructive: true,
+  recordHistory: true,
   sidebarRowCounts: true,
   sidebarViews: true,
   recentCount: 5,

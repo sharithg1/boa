@@ -15,6 +15,10 @@ const COMMANDS: &[&str] = &[
     "introspect",
     "run_query",
     "cancel_query",
+    "history_list",
+    "history_append",
+    "history_delete",
+    "history_clear",
 ];
 
 fn main() {

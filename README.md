@@ -19,6 +19,18 @@ are saved in the app config dir (`connections.json`), passwords too, in
 plain text for now (the file is owner-only on Unix). In a plain browser (`dev:web`) a mock backend serves the sample
 data in `ui/src/state/mock.ts`.
 
+Query History (⌘⌥E, the console toolbar's history button, or "Query
+History" in ⌘K): every statement run from a console is saved per connection
+in the app config dir (`history-<connection id>.jsonl`, JSON lines,
+owner-only; the newest 5,000 kept; deleted with the connection), failed ones
+with their error. Paging through a result does not add entries. Search
+matches words in the SQL as you type, with an errors-only filter and a
+toggle for all connections; ⏎ inserts the statement at the console's caret,
+⌘⏎ opens it in a new console on its database, ⌘C copies, ⌘⌫ deletes. Entries
+can be deleted one by one or cleared, and recording turned off in Settings →
+Queries. The Output log (⌥J) stays a session-only log. In the browser mock
+history lives in `localStorage`.
+
 ## Layout
 
 ```
@@ -28,7 +40,8 @@ crates/dbclient-desktop/ui/      React frontend (Vite, Tailwind v4, shadcn/ui)
   src/state/mock.ts              sample connections / schemas
   src/state/mockData.ts          generated rows for the browser mock
   src/lib/backend.ts             Tauri commands (or the browser mock)
-crates/dbclient-desktop/src/     pg.rs (sessions, introspection, queries), connections.rs (saved settings + passwords)
+  src/state/history.ts           query history (persisted; QueryHistory.tsx is the view)
+crates/dbclient-desktop/src/     pg.rs (sessions, introspection, queries), connections.rs (saved settings + passwords), history.rs (query history)
   src/components/                Sidebar, TitleBar, Workspace, BottomPanel, DataGrid, RightPanel, StatusBar, …
 ```
 

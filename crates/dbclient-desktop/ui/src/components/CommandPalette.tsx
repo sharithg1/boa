@@ -3,8 +3,9 @@
 // matches on table, schema, database and connection otherwise. ↑↓ / Tab
 // move, ⏎ opens (pinned), Esc closes.
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { Eye, Table2 } from 'lucide-react'
+import { Eye, History, Table2 } from 'lucide-react'
 import { openTable, tableKey, useStore } from '@/state/store'
+import { openHistory } from '@/state/history'
 import { usePrefs } from '@/state/prefs'
 import { cn } from '@/lib/utils'
 import { ago, compactCount, fuzzy, highlightRuns } from '@/lib/format'
@@ -23,6 +24,24 @@ type Item = {
 }
 
 type Row = Item & { idxs: number[] }
+
+/** Commands listed after the tables when every typed word starts one of their words. */
+type Action = { id: string; label: string; keys: string; words: string[]; run: () => void }
+const ACTIONS: Action[] = [
+  {
+    id: 'history',
+    label: 'Query History',
+    keys: '⌘⌥E',
+    words: ['query', 'history', 'recent', 'statements', 'log', 'sql'],
+    run: openHistory
+  }
+]
+
+function matchActions(q: string): Action[] {
+  const terms = q.toLowerCase().split(/\s+/).filter(Boolean)
+  if (!terms.length) return []
+  return ACTIONS.filter((a) => terms.every((t) => a.words.some((w) => w.startsWith(t))))
+}
 
 export function CommandPalette() {
   const open = useStore((s) => s.paletteOpen)
@@ -107,8 +126,10 @@ function PaletteBody() {
     return [{ label: null, rows: hits }]
   }, [items, q, mru, recentCount])
   const flat = useMemo(() => groups.flatMap((g) => g.rows), [groups])
+  const actions = useMemo(() => matchActions(q), [q])
+  const total = flat.length + actions.length
 
-  const sel = Math.min(idx, Math.max(0, flat.length - 1))
+  const sel = Math.min(idx, Math.max(0, total - 1))
   useEffect(() => {
     listRef.current?.querySelector(`[data-pi="${sel}"]`)?.scrollIntoView({ block: 'nearest' })
   }, [sel])
@@ -118,7 +139,12 @@ function PaletteBody() {
     useStore.setState({ paletteOpen: false })
     openTable(it.connectionId, it.database, it.schema, it.table, { pin: true })
   }
-  const move = (d: number) => flat.length && setIdx((sel + d + flat.length) % flat.length)
+  const runAction = (a: Action | undefined) => {
+    if (!a) return
+    useStore.setState({ paletteOpen: false })
+    a.run()
+  }
+  const move = (d: number) => total && setIdx((sel + d + total) % total)
 
   let n = 0
   return (
@@ -144,7 +170,8 @@ function PaletteBody() {
               move(-1)
             } else if (e.key === 'Enter') {
               e.preventDefault()
-              choose(flat[sel])
+              if (sel < flat.length) choose(flat[sel])
+              else runAction(actions[sel - flat.length])
             }
           }}
           className="min-w-0 flex-1 border-none bg-transparent text-base text-foreground outline-none placeholder:text-faint"
@@ -210,7 +237,38 @@ function PaletteBody() {
             })}
           </div>
         ))}
-        {flat.length === 0 && (
+        {actions.length > 0 && (
+          <div className="pb-1">
+            <div className="flex items-center gap-[7px] px-2 pt-2 pb-1 text-xs font-medium text-muted-foreground">
+              Actions
+            </div>
+            {actions.map((a) => {
+              const i = n++
+              return (
+                <div
+                  key={a.id}
+                  data-pi={i}
+                  role="option"
+                  aria-selected={i === sel}
+                  onClick={() => runAction(a)}
+                  onMouseMove={() => i !== sel && setIdx(i)}
+                  className={cn(
+                    'flex cursor-default items-center gap-2.5 rounded-md px-2 py-1.5',
+                    i === sel && 'bg-accent'
+                  )}
+                >
+                  <History className="size-3.5 shrink-0 text-quiet" />
+                  <span className="min-w-0 flex-1 truncate text-sm text-body">{a.label}</span>
+                  <span className="shrink-0 font-mono text-2xs text-faint">{a.keys}</span>
+                  <span className="w-3.5 shrink-0 text-right font-mono text-2xs text-muted-foreground">
+                    {i === sel ? '⏎' : ''}
+                  </span>
+                </div>
+              )
+            })}
+          </div>
+        )}
+        {total === 0 && (
           <div className="p-[22px] text-center text-sm text-faint">No tables match.</div>
         )}
       </div>

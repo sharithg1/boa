@@ -39,17 +39,7 @@ fn config_dir(app: &AppHandle) -> CmdResult<PathBuf> {
 
 #[tauri::command]
 fn list_connections(app: AppHandle) -> CmdResult<Vec<SavedConnection>> {
-    connections::load(&config_dir(&app)?)?
-        .into_iter()
-        .map(|config| {
-            // A keychain that can't be read counts as "no saved password".
-            let has_password = connections::password(&config.id).ok().flatten().is_some();
-            Ok(SavedConnection {
-                config,
-                has_password,
-            })
-        })
-        .collect()
+    connections::list(&config_dir(&app)?)
 }
 
 /// Saves a connection. `password`: `Some` stores it (when `save_password`),
@@ -61,14 +51,7 @@ fn save_connection(
     password: Option<String>,
     save_password: bool,
 ) -> CmdResult<()> {
-    if save_password {
-        if let Some(p) = password.as_deref() {
-            connections::set_password(&config.id, p)?;
-        }
-    } else {
-        connections::delete_password(&config.id)?;
-    }
-    connections::upsert(&config_dir(&app)?, config)
+    connections::upsert(&config_dir(&app)?, config, password, save_password)
 }
 
 #[tauri::command]
@@ -79,10 +62,14 @@ async fn delete_connection(app: AppHandle, pg: State<'_, Pg>, id: String) -> Cmd
 
 /// Connects with unsaved settings; returns the server version.
 #[tauri::command]
-async fn test_connection(config: ConnConfig, password: Option<String>) -> CmdResult<String> {
+async fn test_connection(
+    app: AppHandle,
+    config: ConnConfig,
+    password: Option<String>,
+) -> CmdResult<String> {
     let password = match password {
         Some(p) => Some(p),
-        None => connections::password(&config.id).ok().flatten(),
+        None => connections::password(&config_dir(&app)?, &config.id)?,
     };
     Pg::test(&config, password.as_deref()).await
 }
@@ -95,12 +82,9 @@ async fn connect(
     id: String,
     password: Option<String>,
 ) -> CmdResult<ConnectInfo> {
-    let config = connections::get(&config_dir(&app)?, &id)?
+    let (config, stored) = connections::get(&config_dir(&app)?, &id)?
         .ok_or_else(|| CmdError::msg("Unknown connection"))?;
-    let password = match password {
-        Some(p) => Some(p),
-        None => connections::password(&id)?,
-    };
+    let password = password.or(stored);
     pg.connect(config, password).await
 }
 

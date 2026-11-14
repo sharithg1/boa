@@ -1,6 +1,6 @@
 // Data source dialog (new / edit a Postgres connection) and the password
 // prompt for connections without a stored password. Settings are saved by
-// the Rust side in the app config dir; passwords go to the OS keychain.
+// the Rust side in the app config dir, passwords included (plain text for now).
 import { useEffect, useState, type FormEvent, type ReactNode } from 'react'
 import { CircleAlert, CircleCheck, Trash2 } from 'lucide-react'
 import { toBackendError, backend, type ConnConfig, type SslMode } from '@/lib/backend'
@@ -170,7 +170,7 @@ export function ConnectionDialog() {
             </DialogTitle>
             <DialogDescription>
               {backend.real
-                ? 'Settings are saved on this machine; the password goes to the system keychain.'
+                ? 'Settings and the password are saved in a config file on this machine.'
                 : 'Browser preview: no server is contacted, the sample data is used.'}
             </DialogDescription>
           </DialogHeader>
@@ -258,7 +258,7 @@ export function ConnectionDialog() {
           </div>
           <Label className="flex w-fit cursor-pointer items-center gap-2 text-sm font-normal text-soft">
             <Checkbox checked={savePassword} onCheckedChange={(v) => setSavePassword(v === true)} />
-            Save password in keychain
+            Save password
           </Label>
 
           <TestResult test={test} />
@@ -378,7 +378,7 @@ export function PasswordPrompt() {
           />
           <Label className="flex w-fit cursor-pointer items-center gap-2 text-sm font-normal text-soft">
             <Checkbox checked={save} onCheckedChange={(v) => setSave(v === true)} />
-            Save password in keychain
+            Save password
           </Label>
           {prompt.error && (
             <div className="flex items-start gap-2 text-sm text-status-err-text">

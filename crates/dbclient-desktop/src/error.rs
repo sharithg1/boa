@@ -82,12 +82,6 @@ impl From<native_tls::Error> for CmdError {
     }
 }
 
-impl From<keyring::Error> for CmdError {
-    fn from(e: keyring::Error) -> Self {
-        Self::msg(format!("Keychain: {e}"))
-    }
-}
-
 impl From<std::io::Error> for CmdError {
     fn from(e: std::io::Error) -> Self {
         Self::msg(e.to_string())

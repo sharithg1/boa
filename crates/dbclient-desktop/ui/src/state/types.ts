@@ -51,7 +51,7 @@ export type Connection = {
   /** Database connected to first. */
   database: string
   sslMode: SslMode
-  /** A password is stored in the OS keychain. */
+  /** A password is stored in the connections config file. */
   hasPassword: boolean
 }
 

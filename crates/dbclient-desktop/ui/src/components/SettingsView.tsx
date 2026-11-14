@@ -331,7 +331,7 @@ function ConnectionsPage() {
   const order = useStore((s) => s.connectionOrder)
   const connections = useStore((s) => s.connections)
   return (
-    <Section title="Saved connections. Credentials stay in the system keychain">
+    <Section title="Saved connections. Credentials are stored in the local config file">
       <Card>
         {order.map((id) => {
           const c = connections[id]

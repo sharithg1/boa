@@ -6,6 +6,8 @@
 //   after a table reference         JOIN / WHERE / AS … keywords
 //   SELECT / WHERE / ON / SET / BY  columns of the tables in the statement,
 //                                   their aliases, functions, keywords
+//   JOIN t ON                       first, conditions from foreign keys
+//                                   between t and the tables before it
 //   after an expression             AND / FROM / ORDER BY … keywords
 //   alias. / table. / schema.       that table's columns, that schema's tables
 //   INSERT INTO t (                 t's columns
@@ -27,6 +29,8 @@ export type CompletionKind =
   | 'alias'
   | 'function'
   | 'type'
+  /** A JOIN … ON condition from a foreign key. */
+  | 'join'
 
 export type Completion = {
   label: string
@@ -489,6 +493,10 @@ export function complete(
   } else if (mode.kind === 'type') {
     for (const t of TYPES) add({ label: t, kind: 'type', insert: t }, 3)
   } else {
+    // JOIN t ON |: the foreign keys between t and the tables before it, first.
+    if (isWord(last, 'on'))
+      for (const cond of joinConditions(refs, pre.length - 1, upper))
+        add({ label: cond, kind: 'join', insert: cond, detail: 'foreign key' }, 6)
     // Columns of every table in the statement. A name two tables share is
     // inserted qualified, so the query stays unambiguous.
     const resolved = refs.filter((r) => r.table)
@@ -533,6 +541,40 @@ export function complete(
 }
 
 const isNameOrWord = (t: Tok | undefined) => !!t && (t.type === 'ident' || t.type === 'word')
+
+/**
+ * `a.x = b.y` conditions for `JOIN t ON`, from the foreign keys either way
+ * between t (the reference ending just before ON, token `onTok`) and each
+ * table referenced before it; the joined table's side comes first.
+ */
+function joinConditions(refs: Ref[], onTok: number, upper: boolean): string[] {
+  const joined = refs.find((r) => r.endTok === onTok - 1)
+  if (!joined?.table) return []
+  const q = (r: Ref) => quoteIdent(r.alias ?? r.name)
+  const and = upper ? ' AND ' : ' and '
+  const fks = (from: Ref, to: Ref) =>
+    (from.table?.constraints ?? []).filter((c) => {
+      const r = c.references
+      return (
+        c.kind === 'f' &&
+        !!r &&
+        r.table === to.table?.name &&
+        r.schema === to.schema &&
+        r.columns.length === c.columns.length
+      )
+    })
+  const cond = (a: Ref, aCols: string[], b: Ref, bCols: string[]) =>
+    aCols.map((c, i) => `${q(a)}.${quoteIdent(c)} = ${q(b)}.${quoteIdent(bCols[i]!)}`).join(and)
+  const out: string[] = []
+  for (const other of refs) {
+    if (other === joined || !other.table || other.insert || other.endTok >= joined.endTok) continue
+    for (const fk of fks(joined, other))
+      out.push(cond(joined, fk.columns, other, fk.references!.columns))
+    for (const fk of fks(other, joined))
+      out.push(cond(joined, fk.references!.columns, other, fk.columns))
+  }
+  return out
+}
 
 function tableRef(cat: Catalog, parts: string[]): Ref | undefined {
   const hit = findTable(cat, parts)

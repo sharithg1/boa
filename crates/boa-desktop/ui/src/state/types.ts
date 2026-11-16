@@ -15,6 +15,30 @@ export type Column = {
   default: string | null
 }
 
+export type Index = {
+  name: string
+  /** Key columns in order: names, or the expression of an expression column. */
+  columns: string[]
+  unique: boolean
+  primary: boolean
+  /** `CREATE [UNIQUE] INDEX … ON … USING …` (`pg_get_indexdef`). */
+  definition: string
+}
+
+/** `pg_constraint.contype`: primary key, unique, foreign key, check, exclusion. */
+export type ConstraintKind = 'p' | 'u' | 'f' | 'c' | 'x'
+
+export type Constraint = {
+  name: string
+  kind: ConstraintKind
+  /** `PRIMARY KEY (id)`, `FOREIGN KEY (org_id) REFERENCES orgs(id)`… (`pg_get_constraintdef`). */
+  definition: string
+  /** The constrained columns, in order. */
+  columns: string[]
+  /** Foreign keys: the referenced table and its columns (same order as `columns`). */
+  references?: { schema: string; table: string; columns: string[] }
+}
+
 export type Table = {
   name: string
   kind: 'table' | 'view'
@@ -22,6 +46,9 @@ export type Table = {
   rows: number
   sizeBytes: number
   columns: Column[]
+  /** Every index (the primary key's too); tables and materialized views. */
+  indexes?: Index[]
+  constraints?: Constraint[]
 }
 
 export type Schema = { name: string; tables: Table[] }

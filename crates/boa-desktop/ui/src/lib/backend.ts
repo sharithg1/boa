@@ -13,6 +13,7 @@ import { applyMockEdits } from '@/state/mockEdits'
 import { localHistoryStore, type HistoryRecord } from './history'
 import type { Environment, ResultColumn, Schema } from '@/state/types'
 import { trackTx, type TxState } from '@/state/tx'
+import { ddlFromMetadata } from './tableMeta'
 
 export type SslMode = 'disable' | 'prefer' | 'require' | 'verify-full'
 
@@ -113,8 +114,10 @@ export type Backend = {
   disconnect(id: string): Promise<void>
   /** Every schema name in the database (cheap; for the schema picker). */
   listSchemas(id: string, database: string): Promise<string[]>
-  /** Tables, views and columns of the given schemas only. */
+  /** Tables, views, columns, indexes and constraints of the given schemas only. */
   introspect(id: string, database: string, schemas: string[]): Promise<Schema[]>
+  /** DDL of one table / view, as the server describes it (CREATE, indexes, triggers, comments). */
+  tableDdl(id: string, database: string, schema: string, table: string): Promise<string>
   /** Runs `sql`, returning `limit` rows after the first `offset` (pageable statements only). */
   runQuery(
     id: string,
@@ -149,6 +152,7 @@ const tauriBackend: Backend = {
   disconnect: (id) => invoke('disconnect', { id }),
   listSchemas: (id, database) => invoke('list_schemas', { id, database }),
   introspect: (id, database, schemas) => invoke('introspect', { id, database, schemas }),
+  tableDdl: (id, database, schema, table) => invoke('table_ddl', { id, database, schema, table }),
   runQuery: (id, database, sql, limit, offset = 0) =>
     invoke('run_query', { id, database, sql, limit, offset }),
   cancelQuery: (id, database) => invoke('cancel_query', { id, database }),
@@ -239,6 +243,14 @@ function mockBackend(): Backend {
     introspect: async (id, database, schemas) => {
       await sleep(150)
       return dbOf(id, database)?.schemas.filter((s) => schemas.includes(s.name)) ?? []
+    },
+    tableDdl: async (id, database, schema, table) => {
+      await sleep(60)
+      const t = dbOf(id, database)
+        ?.schemas.find((s) => s.name === schema)
+        ?.tables.find((x) => x.name === table)
+      if (!t) throw { message: `${schema}.${table} not found` }
+      return ddlFromMetadata(schema, t)
     },
     runQuery: async (id, database, sql, limit, offset = 0) => {
       const key = `${id}\u0000${database}`

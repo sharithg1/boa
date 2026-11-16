@@ -148,6 +148,64 @@ describe('complete', () => {
     expect([r.from, r.to, r.prefix]).toEqual([14, 19, 'us'])
   })
 
+  it('offers JOIN … ON conditions from foreign keys, either way', () => {
+    const fk = (cols: string[], table: string, refCols: string[], schema = 'public') => ({
+      name: `${table}_fkey`,
+      kind: 'f' as const,
+      columns: cols,
+      definition: '',
+      references: { schema, table, columns: refCols }
+    })
+    const users = table('users', [col('id', 'integer', true), col('email')])
+    const orders = table('orders', [col('id', 'integer', true), col('user_id', 'integer')])
+    orders.constraints = [fk(['user_id'], 'users', ['id'])]
+    const lines = table('lines', [col('order_id', 'integer'), col('n', 'integer')])
+    lines.constraints = [fk(['order_id'], 'orders', ['id']), fk(['n'], 'users', ['id'], 'other')]
+    const cat: Schema[] = [{ name: 'public', tables: [users, orders, lines] }]
+    const on = (sql: string) => {
+      const pos = sql.indexOf('|')
+      return complete(sql.replace('|', ''), pos, cat, { explicit: true })?.items ?? []
+    }
+    expect(on('select * from users u join orders o on |')[0]).toMatchObject({
+      kind: 'join',
+      insert: 'o.user_id = u.id'
+    })
+    expect(on('select * from orders join users on |')[0]?.insert).toBe('users.id = orders.user_id')
+    // Every earlier table; a key into another schema's `users` doesn't count.
+    const joins = on('SELECT * FROM users u JOIN orders o ON o.user_id = u.id JOIN lines l ON |')
+      .filter((i) => i.kind === 'join')
+      .map((i) => i.insert)
+    expect(joins).toEqual(['l.order_id = o.id'])
+    // Typing narrows it like any other item (the alias itself matches better);
+    // not after ON's first word.
+    expect(on('select * from users u join orders o on o|').map((i) => i.insert)).toEqual(
+      expect.arrayContaining(['o', 'o.user_id = u.id'])
+    )
+    expect(on('select * from users u join orders o on user_i|')[0]?.kind).toBe('column')
+    expect(
+      on('select * from users u join orders o on o.id = |').some((i) => i.kind === 'join')
+    ).toBe(false)
+  })
+
+  it('joins a composite foreign key with AND', () => {
+    const a = table('a', [col('x'), col('y')])
+    const b = table('b', [col('ax'), col('ay')])
+    b.constraints = [
+      {
+        name: 'b_fkey',
+        kind: 'f',
+        columns: ['ax', 'ay'],
+        definition: '',
+        references: { schema: 'public', table: 'a', columns: ['x', 'y'] }
+      }
+    ]
+    const sql = 'SELECT * FROM a JOIN b ON '
+    const items = complete(sql, sql.length, [{ name: 'public', tables: [a, b] }], {
+      explicit: true
+    })!.items
+    expect(items[0]?.insert).toBe('b.ax = a.x AND b.ay = a.y')
+  })
+
   it('completes inside an open quoted identifier', () => {
     const r = at('select * from "us|')!
     expect(r.from).toBe(14)

@@ -67,6 +67,25 @@ describe('parseSession', () => {
     })
   })
 
+  it("keeps a table tab's filter and sort", () => {
+    const tab = { id: 't1', kind: 'table', schema: 'public', table: 'users', preview: false }
+    const raw = JSON.stringify({
+      workspaces: {
+        [dbKey('c1', 'app')]: {
+          tabs: [
+            { ...tab, where: "role = 'admin'", orderBy: 'id desc' },
+            { ...tab, id: 't2', where: '  ', orderBy: 3 }
+          ],
+          activeTab: 't1'
+        }
+      }
+    })
+    expect(parseSession(raw, ['c1'])!.workspaces[dbKey('c1', 'app')]!.tabs).toEqual([
+      { ...tab, where: "role = 'admin'", orderBy: 'id desc' },
+      { ...tab, id: 't2' }
+    ])
+  })
+
   it('ignores missing or corrupt data', () => {
     expect(parseSession(null, ['c1'])).toBeNull()
     expect(parseSession('{nope', ['c1'])).toBeNull()

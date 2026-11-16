@@ -191,8 +191,10 @@ pnpm --dir crates/boa-desktop/ui typecheck && pnpm --dir crates/boa-desktop/ui l
   show"]`). A console can still query them: `sql select * from audit.events;`
   (the only table with a `jsonb` column, for the JSON viewer).
 - The mock runs no SQL: `select … from <table>` returns that table's sample
-  rows whatever the `where` / `join` / `limit`, and expressions like
-  `count(*)` fail with "column does not exist". An unknown table fails with
+  rows whatever the `join`, and expressions like `count(*)` fail with
+  "column does not exist". Simple `where` conditions (`col = / < / > / like /
+  is null` with and / or) and `order by` column names are applied to the
+  first 20,000 sample rows (state/mockQuery.ts). An unknown table fails with
   `42P01`. Assert on the UI, not on row contents; timings are random.
 - `sql` uses `fill`, which does not fire the per-key input the completion
   popup needs — use `sql-type` to see completions.

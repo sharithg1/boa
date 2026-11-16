@@ -9,6 +9,7 @@ mod edits;
 mod error;
 mod history;
 mod pg;
+mod ssh;
 mod tx;
 
 use connections::{ConnConfig, SavedConnection};
@@ -330,6 +331,10 @@ pub fn run() {
                     api.prevent_exit();
                     let _ = w.emit("quit-requested", ());
                 }
+            }
+            // The process exits without dropping state: kill the SSH tunnels.
+            if let tauri::RunEvent::Exit = event {
+                app.state::<Pg>().close_tunnels();
             }
         });
 }

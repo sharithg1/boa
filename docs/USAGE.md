@@ -22,6 +22,32 @@ connection's database, the `public` schema).
 Settings are saved in the app config dir (`connections.json`), passwords
 too, in plain text for now (the file is owner-only on Unix).
 
+### SSH tunnel
+
+Like DataGrip's SSH/SSL tab, a data source can be reached through an SSH
+server: tick **SSH tunnel** in the data source dialog and give the SSH host
+(a host name, IP or `~/.ssh/config` alias), and optionally the port (default:
+22 or the config's `Port`), the user (default: the config's `User` or your
+login name) and the authentication: the **SSH agent** (plus the keys ssh finds
+itself, e.g. `IdentityFile` in `~/.ssh/config`) or a **key file**. The
+Host / Port above are then the database as the SSH server sees it
+(`localhost`: the SSH server itself; a Unix socket directory works too).
+
+Boa runs the system `/usr/bin/ssh -N -L 127.0.0.1:<free port>:<db host>:<db port>`
+in batch mode, so `~/.ssh/config` (aliases, `ProxyJump`), the agent and
+`known_hosts` all apply, but nothing is prompted for: the host key must
+already be in `known_hosts` (connect once with `ssh` in Terminal), and a key
+with a passphrase must be in the agent (`ssh-add --apple-use-keychain`). No
+SSH password or passphrase is stored. ssh's own error (host key verification
+failed, permission denied, …) is shown when the tunnel can't be opened.
+
+One tunnel per connected data source carries all its sessions (one per
+database), Cancel and Test connection (which opens a tunnel of its own). It
+is closed on disconnect, when connecting fails and at quit; if ssh exits
+while connected, the next statement reopens it. TLS (the SSL setting) still
+runs end to end with the database, and Verify full checks the database's
+host name, not the tunnel's `127.0.0.1`.
+
 ## Editing table data
 
 Table data is editable like DataGrip's data editor, for tables with a

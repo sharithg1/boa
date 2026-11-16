@@ -11,12 +11,14 @@
 
 use crate::connections::{ConnConfig, SslMode};
 use crate::error::{CmdError, CmdResult};
+use crate::ssh::Tunnel;
 use crate::tx::{self, TxCell, TxState};
 use postgres_native_tls::MakeTlsConnector;
 use serde::Serialize;
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::net::Ipv4Addr;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, PoisonError};
 use std::time::{Duration, Instant};
 use tokio::sync::Mutex;
 use tokio_postgres::{CancelToken, Client, SimpleQueryMessage};
@@ -47,6 +49,10 @@ struct Open {
 pub struct Pg {
     open: Mutex<HashMap<String, Arc<Open>>>,
     sessions: Mutex<HashMap<(String, String), Arc<Session>>>,
+    /// SSH tunnels of open connections, shared by their sessions. Dropping
+    /// one kills its ssh. A std mutex, never held across an await, so quitting
+    /// can kill them synchronously.
+    tunnels: std::sync::Mutex<HashMap<String, Tunnel>>,
 }
 
 impl std::fmt::Debug for Pg {
@@ -64,14 +70,21 @@ fn tls(mode: SslMode) -> CmdResult<MakeTlsConnector> {
     Ok(MakeTlsConnector::new(connector))
 }
 
+/// `via`: the local port of the connection's SSH tunnel, connected to
+/// instead of the host (which stays the TLS host name). The cancel token
+/// keeps that address, so cancelling goes through the tunnel too.
 async fn open_session(
     config: &ConnConfig,
     password: Option<&str>,
     database: &str,
+    via: Option<u16>,
 ) -> CmdResult<Session> {
     let mut c = tokio_postgres::Config::new();
+    if via.is_some() {
+        c.hostaddr(Ipv4Addr::LOCALHOST.into());
+    }
     c.host(&config.host)
-        .port(config.port)
+        .port(via.unwrap_or(config.port))
         .user(&config.user)
         .dbname(database)
         .application_name("boa")
@@ -226,15 +239,29 @@ impl Pg {
         password: Option<String>,
     ) -> CmdResult<ConnectInfo> {
         self.disconnect(&config.id).await;
-        let session = open_session(&config, password.as_deref(), &config.database).await?;
-        let server_version = session.client.query_one(SERVER_VERSION, &[]).await?.get(0);
-        let databases = session
-            .client
-            .query(DATABASES, &[])
-            .await?
-            .iter()
-            .map(|r| r.get(0))
-            .collect();
+        let first = async {
+            let via = self.tunnel_port(&config).await?;
+            let session = open_session(&config, password.as_deref(), &config.database, via).await?;
+            let server_version: String =
+                session.client.query_one(SERVER_VERSION, &[]).await?.get(0);
+            let databases: Vec<String> = session
+                .client
+                .query(DATABASES, &[])
+                .await?
+                .iter()
+                .map(|r| r.get(0))
+                .collect();
+            Ok::<_, CmdError>((session, server_version, databases))
+        };
+        let (session, server_version, databases) = match first.await {
+            Ok(x) => x,
+            Err(e) => {
+                return Err(match self.close_tunnel(&config.id) {
+                    Some(t) => t.explain(e).await,
+                    None => e,
+                });
+            }
+        };
         let id = config.id.clone();
         let database = config.database.clone();
         self.sessions
@@ -251,10 +278,62 @@ impl Pg {
         })
     }
 
-    /// Connects, reads the version and disconnects.
+    /// Connects (through a tunnel of its own), reads the version and disconnects.
     pub async fn test(config: &ConnConfig, password: Option<&str>) -> CmdResult<String> {
-        let session = open_session(config, password, &config.database).await?;
-        Ok(session.client.query_one(SERVER_VERSION, &[]).await?.get(0))
+        let tunnel = match config.tunnel() {
+            Some(t) => Some(Tunnel::open(t, &config.host, config.port).await?),
+            None => None,
+        };
+        let version = async {
+            let via = tunnel.as_ref().map(|t| t.port);
+            let session = open_session(config, password, &config.database, via).await?;
+            Ok::<String, CmdError>(session.client.query_one(SERVER_VERSION, &[]).await?.get(0))
+            // The session closes here.
+        };
+        match (version.await, &tunnel) {
+            (Err(e), Some(t)) => Err(t.explain(e).await),
+            (r, _) => r,
+        }
+        // Dropping the tunnel kills ssh.
+    }
+
+    /// The local port of the connection's SSH tunnel (none without one),
+    /// starting ssh if it isn't running (first connect, or it exited).
+    async fn tunnel_port(&self, config: &ConnConfig) -> CmdResult<Option<u16>> {
+        let Some(ssh) = config.tunnel() else {
+            return Ok(None);
+        };
+        if let Some(t) = self.tunnels().get(&config.id) {
+            if t.is_alive() {
+                return Ok(Some(t.port));
+            }
+            tracing::warn!("SSH tunnel of {} exited; restarting it", config.name);
+        }
+        let t = Tunnel::open(ssh, &config.host, config.port).await?;
+        let port = t.port;
+        // Replaces (and so kills) a dead one.
+        self.tunnels().insert(config.id.clone(), t);
+        Ok(Some(port))
+    }
+
+    fn tunnels(&self) -> std::sync::MutexGuard<'_, HashMap<String, Tunnel>> {
+        self.tunnels.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// Kills the connection's tunnel; returns it for its stderr.
+    fn close_tunnel(&self, id: &str) -> Option<Tunnel> {
+        let t = self.tunnels().remove(id);
+        if let Some(t) = &t {
+            t.kill();
+        }
+        t
+    }
+
+    /// Kills every SSH tunnel (at quit, when nothing is dropped).
+    pub fn close_tunnels(&self) {
+        for (_, t) in self.tunnels().drain() {
+            t.kill();
+        }
     }
 
     pub async fn disconnect(&self, id: &str) {
@@ -277,7 +356,9 @@ impl Pg {
                 .await;
             }
         }
-        // Dropping the clients closes their connections.
+        // Dropping the clients closes their connections; the tunnel goes
+        // after the rollbacks, which ran through it.
+        self.close_tunnel(id);
     }
 
     /// Switches the session to Manual (`true`) or Auto transaction mode.
@@ -307,7 +388,9 @@ impl Pg {
             .get(id)
             .cloned()
             .ok_or_else(|| CmdError::code("not_connected", "Not connected"))?;
-        let s = Arc::new(open_session(&open.config, open.password.as_deref(), database).await?);
+        let via = self.tunnel_port(&open.config).await?;
+        let s =
+            Arc::new(open_session(&open.config, open.password.as_deref(), database, via).await?);
         s.manual.store(manual, Ordering::Relaxed);
         sessions.insert(key, s.clone());
         Ok(s)
@@ -664,6 +747,7 @@ mod tests {
             read_only: false,
             environment: None,
             color: None,
+            ssh: None,
         };
         let db = config.database.clone();
         let pg = Pg::default();

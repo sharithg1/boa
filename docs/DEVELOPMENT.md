@@ -19,12 +19,14 @@ crates/boa-desktop/ui/           React frontend (Vite, Tailwind v4, shadcn/ui)
   src/state/tx.ts, guards.ts     transaction mode / state per session; confirmations
   src/lib/guard.ts               destructive and read-only statement checks
   src/state/mock.ts              sample connections / schemas
-  src/state/mockData.ts          generated rows for the browser mock
+  src/state/mockData.ts          generated rows for the browser mock (mockQuery.ts: its WHERE / ORDER BY)
+  src/lib/tableQuery.ts          a table tab's SELECT with its filter bar's WHERE / ORDER BY
   src/lib/backend.ts             Tauri commands (or the browser mock)
   src/state/history.ts           query history (persisted; QueryHistory.tsx is the view)
   src/components/                Sidebar, TitleBar, Workspace, BottomPanel, DataGrid, RightPanel, StatusBar, …
 crates/boa-desktop/src/          pg.rs (sessions, introspection, queries), tx.rs (transaction state probe),
-                                 connections.rs (saved settings + passwords), edits.rs (submitting grid edits),
+                                 connections.rs (saved settings + passwords), ssh.rs (SSH tunnels),
+                                 edits.rs (submitting grid edits),
                                  history.rs (query history)
 ```
 

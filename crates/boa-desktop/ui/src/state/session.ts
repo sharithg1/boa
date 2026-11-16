@@ -1,7 +1,8 @@
 // The last session, restored at startup: the selected database, each
-// database's tabs (consoles with their SQL, open tables) and its active
-// tab, recent tables and which panels were open. Kept in localStorage and
-// rewritten as it changes, so a crash or force quit loses nothing either.
+// database's tabs (consoles with their SQL, open tables with their filter
+// and sort) and its active tab, recent tables and which panels were open.
+// Kept in localStorage and rewritten as it changes, so a crash or force
+// quit loses nothing either.
 // Results are not kept: statements are not re-run on launch.
 
 import {
@@ -45,7 +46,9 @@ function parseTab(v: unknown): Tab | null {
       kind: 'table',
       schema: v.schema,
       table: v.table,
-      preview: v.preview === true
+      preview: v.preview === true,
+      ...(typeof v.where === 'string' && v.where.trim() ? { where: v.where } : {}),
+      ...(typeof v.orderBy === 'string' && v.orderBy.trim() ? { orderBy: v.orderBy } : {})
     }
   return null
 }

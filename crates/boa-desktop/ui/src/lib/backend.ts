@@ -13,6 +13,7 @@ import { applyMockEdits } from '@/state/mockEdits'
 import { localHistoryStore, type HistoryRecord } from './history'
 import type { Environment, ResultColumn, Schema } from '@/state/types'
 import { trackTx, type TxState } from '@/state/tx'
+import { ddlFromMetadata } from './tableMeta'
 
 export type SslMode = 'disable' | 'prefer' | 'require' | 'verify-full'
 
@@ -31,6 +32,24 @@ export type ConnConfig = {
   environment?: Environment
   /** Palette colour name (lib/connTag.ts). */
   color?: string
+  /** SSH tunnel (kept while disabled); host / port above are as the SSH server sees them. */
+  ssh?: SshTunnel
+}
+
+/** `agent`: the SSH agent and ssh's own keys; `key-file`: `ssh -i <identityFile>`. */
+export type SshAuth = 'agent' | 'key-file'
+
+/** Run with the system ssh, so ~/.ssh/config (aliases, ProxyJump), the agent and known_hosts apply. */
+export type SshTunnel = {
+  enabled: boolean
+  /** Host name, IP or ~/.ssh/config alias. */
+  host: string
+  /** Unset: 22 or the ~/.ssh/config Port. */
+  port?: number
+  /** Empty: the ~/.ssh/config User or the login name. */
+  user: string
+  auth: SshAuth
+  identityFile?: string
 }
 
 export type SavedConnection = ConnConfig & { hasPassword: boolean }
@@ -95,8 +114,10 @@ export type Backend = {
   disconnect(id: string): Promise<void>
   /** Every schema name in the database (cheap; for the schema picker). */
   listSchemas(id: string, database: string): Promise<string[]>
-  /** Tables, views and columns of the given schemas only. */
+  /** Tables, views, columns, indexes and constraints of the given schemas only. */
   introspect(id: string, database: string, schemas: string[]): Promise<Schema[]>
+  /** DDL of one table / view, as the server describes it (CREATE, indexes, triggers, comments). */
+  tableDdl(id: string, database: string, schema: string, table: string): Promise<string>
   /** Runs `sql`, returning `limit` rows after the first `offset` (pageable statements only). */
   runQuery(
     id: string,
@@ -131,6 +152,7 @@ const tauriBackend: Backend = {
   disconnect: (id) => invoke('disconnect', { id }),
   listSchemas: (id, database) => invoke('list_schemas', { id, database }),
   introspect: (id, database, schemas) => invoke('introspect', { id, database, schemas }),
+  tableDdl: (id, database, schema, table) => invoke('table_ddl', { id, database, schema, table }),
   runQuery: (id, database, sql, limit, offset = 0) =>
     invoke('run_query', { id, database, sql, limit, offset }),
   cancelQuery: (id, database) => invoke('cancel_query', { id, database }),
@@ -196,6 +218,10 @@ function mockBackend(): Backend {
     testConnection: async (config) => {
       await sleep(300)
       if (!config.host) throw { message: 'Host is empty' }
+      if (config.ssh?.enabled && !config.ssh.host.trim())
+        throw { message: 'SSH tunnel: the SSH host is empty' }
+      if (config.ssh?.enabled && config.ssh.auth === 'key-file' && !config.ssh.identityFile?.trim())
+        throw { message: 'SSH tunnel: choose a private key file' }
       return 'PostgreSQL 17.2 (mock)'
     },
     connect: async (id) => {
@@ -217,6 +243,14 @@ function mockBackend(): Backend {
     introspect: async (id, database, schemas) => {
       await sleep(150)
       return dbOf(id, database)?.schemas.filter((s) => schemas.includes(s.name)) ?? []
+    },
+    tableDdl: async (id, database, schema, table) => {
+      await sleep(60)
+      const t = dbOf(id, database)
+        ?.schemas.find((s) => s.name === schema)
+        ?.tables.find((x) => x.name === table)
+      if (!t) throw { message: `${schema}.${table} not found` }
+      return ddlFromMetadata(schema, t)
     },
     runQuery: async (id, database, sql, limit, offset = 0) => {
       const key = `${id}\u0000${database}`
@@ -257,7 +291,7 @@ function mockBackend(): Backend {
           hint: 'The connection is read-only (data source settings).'
         })
       const res = execute(dbOf(id, database), sql, limit, offset)
-      if (res.kind === 'error') return fail({ message: res.message, code: '42P01' })
+      if (res.kind === 'error') return fail({ message: res.message, code: res.code ?? '42P01' })
       if (res.kind === 'affected') {
         if (offset) throw { message: "This statement can't be paged", tx: s.tx }
         return { ...done, affected: res.count, tx: s.tx }

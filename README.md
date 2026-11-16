@@ -81,6 +81,10 @@ Export the whole result, not just the loaded page. Postgres streams it with
 ### Picks up where you left off
 Tabs, their SQL, the active tab and the panel layout come back on launch.
 
+### Updates itself
+New releases download in the background; one click on **Restart to
+update** installs them.
+
 The details of each feature are in [docs/USAGE.md](docs/USAGE.md).
 
 ## Supported databases
@@ -99,6 +103,8 @@ The details of each feature are in [docs/USAGE.md](docs/USAGE.md).
    ```
 
 3. Open Boa, press <kbd>⌘O</kbd> and add a data source.
+
+After that, Boa keeps itself up to date.
 
 ## How it works
 

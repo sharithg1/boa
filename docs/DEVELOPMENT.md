@@ -22,18 +22,20 @@ crates/boa-desktop/ui/           React frontend (Vite, Tailwind v4, shadcn/ui)
   src/state/mockData.ts          generated rows for the browser mock (mockQuery.ts: its WHERE / ORDER BY)
   src/lib/tableQuery.ts          a table tab's SELECT with its filter bar's WHERE / ORDER BY
   src/lib/backend.ts             Tauri commands (or the browser mock)
+  src/lib/updates.ts             in-app updates; AboutWindow.tsx is the About window
   src/state/history.ts           query history (persisted; QueryHistory.tsx is the view)
   src/components/                Sidebar, TitleBar, Workspace, BottomPanel, DataGrid, RightPanel, StatusBar, …
 crates/boa-desktop/src/          pg.rs (sessions, introspection, queries), tx.rs (transaction state probe),
                                  connections.rs (saved settings + passwords), ssh.rs (SSH tunnels),
                                  edits.rs (submitting grid edits),
-                                 history.rs (query history)
+                                 history.rs (query history), updater.rs (in-app updates, app menu, About window)
 ```
 
 ## Run
 
 ```sh
-# UI only, in a browser (http://localhost:1420; add ?overlay to preview the macOS title-bar inset)
+# UI only, in a browser (http://localhost:1420; add ?overlay to preview the macOS title-bar inset,
+# ?about for the About window, ?update=ready for the "Restart to update" pill)
 pnpm --dir crates/boa-desktop/ui install
 pnpm --dir crates/boa-desktop/ui dev:web
 

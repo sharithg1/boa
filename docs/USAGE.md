@@ -181,6 +181,15 @@ The same menu copies the loaded page as CSV and sets the delimiter (comma,
 tab, semicolon) and header row. NULL is an empty field, an empty string
 `""`, as in Postgres's COPY.
 
+## Updates
+
+Boa checks for a new release shortly after launch and every few hours, and
+downloads it in the background. When it is ready, the status bar shows
+**Restart to update to X.Y.Z**; Boa asks first if a transaction is open, as
+on quit, and your tabs come back after the restart. **Boa → Check for
+Updates…** checks right away, and **Boa → About Boa** shows the version
+(with **Copy version info** for bug reports).
+
 ## Session restore
 
 On launch Boa reopens the last session: the open tabs, each console's SQL,

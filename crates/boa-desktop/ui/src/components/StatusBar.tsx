@@ -2,8 +2,19 @@
 // breadcrumbs of the active tab (connection › database › schema › table, or
 // the console), and on the right the caret position / row estimate and the
 // active connection + latency (click for the connection popover).
-import { ChevronDown, ChevronRight, PanelBottom, Server } from 'lucide-react'
-import { connect, connectionString, dbKey, disconnect, findTable, useStore } from '@/state/store'
+import { useState } from 'react'
+import { ArrowDownToLine, ChevronDown, ChevronRight, PanelBottom, Server } from 'lucide-react'
+import {
+  connect,
+  connectionString,
+  dbKey,
+  disconnect,
+  findTable,
+  reportError,
+  useStore
+} from '@/state/store'
+import { useUpdateStatus } from '@/lib/updates'
+import { restartToUpdate } from './GuardDialogs'
 import { ENGINE_LABEL } from '@/lib/format'
 import { cn } from '@/lib/utils'
 import { IconButton } from './IconButton'
@@ -76,7 +87,37 @@ export function StatusBar() {
       <TxStatus />
       {conn && connId && <ConnectionPopover connectionId={connId} />}
       {!conn && <span className="px-1.5">no connection</span>}
+      <UpdatePill />
     </footer>
+  )
+}
+
+/** "Restart to update" once a newer Boa is downloaded (src/updater.rs). */
+function UpdatePill() {
+  const status = useUpdateStatus()
+  const [installing, setInstalling] = useState(false)
+  if (status?.phase !== 'ready') return null
+  return (
+    <button
+      type="button"
+      disabled={installing}
+      title={`Boa ${status.version} is downloaded. Restart to install it; your tabs come back.`}
+      className="ml-1 flex h-6 shrink-0 cursor-pointer items-center gap-1.5 rounded-md bg-primary px-2 text-xs font-medium text-primary-foreground hover:bg-primary/90 disabled:cursor-default disabled:opacity-60"
+      onClick={() => {
+        setInstalling(true)
+        restartToUpdate()
+          .then((ok) => {
+            if (!ok) setInstalling(false)
+          })
+          .catch((err) => {
+            setInstalling(false)
+            reportError('Could not install the update', err)
+          })
+      }}
+    >
+      <ArrowDownToLine className="size-3.5" />
+      {installing ? 'Restarting…' : `Restart to update to ${status.version}`}
+    </button>
   )
 }
 

@@ -10,7 +10,8 @@ import { TriangleAlert } from 'lucide-react'
 import { backend } from '@/lib/backend'
 import { connectionColor, isProduction } from '@/lib/connTag'
 import { confirmCloseTx, settle, useGuards, type Pending } from '@/state/guards'
-import { dbKey, useStore } from '@/state/store'
+import { dbKey, reportError, useStore } from '@/state/store'
+import { INSTALL_REQUEST, installUpdate } from '@/lib/updates'
 import { openTransactions, txOf, useTx } from '@/state/tx'
 import {
   AlertDialog,
@@ -97,7 +98,8 @@ function ConfirmRun({ p }: { p: Extract<Pending, { kind: 'run' }> }) {
 const CLOSE_TEXT = {
   disconnect: ['Disconnect with an open transaction?', 'Roll back and disconnect'],
   reconnect: ['Reconnect with an open transaction?', 'Roll back and reconnect'],
-  quit: ['Quit with an open transaction?', 'Roll back and quit']
+  quit: ['Quit with an open transaction?', 'Roll back and quit'],
+  update: ['Restart to update with an open transaction?', 'Roll back and restart']
 } as const
 
 function ConfirmCloseTx({ p }: { p: Extract<Pending, { kind: 'close-tx' }> }) {
@@ -208,12 +210,25 @@ const connectionNames = () =>
   Object.fromEntries(Object.values(useStore.getState().connections).map((c) => [c.id, c.name]))
 
 /** Asks before the app goes away with transactions open, then rolls them back. */
-async function confirmQuit(): Promise<boolean> {
+async function confirmQuit(action: 'quit' | 'update' = 'quit'): Promise<boolean> {
   const open = openTransactions(useTx.getState().sessions)
   if (!open.length) return true
-  if (!(await confirmCloseTx('quit', connectionNames()))) return false
+  if (!(await confirmCloseTx(action, connectionNames()))) return false
   const ids = [...new Set(open.map((o) => o.connectionId))]
   await Promise.allSettled(ids.map((id) => backend.disconnect(id)))
+  return true
+}
+
+/**
+ * "Restart to update" (status bar pill, or the About window through
+ * INSTALL_REQUEST): asks about open transactions like a quit, saves the
+ * session, then installs and relaunches. Resolves false when cancelled;
+ * rejects when the install fails.
+ */
+export async function restartToUpdate(): Promise<boolean> {
+  flushSession()
+  if (!(await confirmQuit('update'))) return false
+  await installUpdate()
   return true
 }
 
@@ -241,6 +256,11 @@ function useQuitGuard() {
       listen('quit-requested', async () => {
         flushSession()
         if (await confirmQuit()) await invoke('quit')
+      }),
+      // The About window's "Restart to Update": the guard lives here.
+      listen(INSTALL_REQUEST, () => {
+        void getCurrentWindow().setFocus()
+        restartToUpdate().catch((err) => reportError('Could not install the update', err))
       })
     ]
     return () => {

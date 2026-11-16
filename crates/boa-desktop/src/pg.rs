@@ -21,7 +21,9 @@ use std::time::{Duration, Instant};
 use tokio::sync::Mutex;
 use tokio_postgres::{CancelToken, Client, SimpleQueryMessage};
 
+mod catalog;
 mod export;
+use catalog::{Constraint, Index};
 pub use export::{CsvOptions, ExportResult, write_file_atomic};
 
 struct Session {
@@ -133,6 +135,10 @@ pub struct Table {
     pub rows: i64,
     pub size_bytes: i64,
     pub columns: Vec<Column>,
+    /// Tables and materialized views: every index, primary key's included.
+    pub indexes: Vec<Index>,
+    /// Tables: primary key, unique, foreign key, check and exclusion constraints.
+    pub constraints: Vec<Constraint>,
 }
 
 #[derive(Debug, Serialize)]
@@ -324,7 +330,8 @@ impl Pg {
             .collect())
     }
 
-    /// Tables, views and columns of the given schemas only (those that exist).
+    /// Tables, views, columns, indexes and constraints of the given schemas
+    /// only (those that exist).
     pub async fn introspect(
         &self,
         id: &str,
@@ -365,6 +372,8 @@ impl Pg {
                     rows: r.get(3),
                     size_bytes: r.get(4),
                     columns: Vec::new(),
+                    indexes: Vec::new(),
+                    constraints: Vec::new(),
                 });
             }
             let column: Option<String> = r.get(5);
@@ -378,6 +387,7 @@ impl Pg {
                 });
             }
         }
+        Self::introspect_keys(&s.client, only, &mut schemas).await?;
         Ok(schemas)
     }
 
@@ -891,6 +901,124 @@ mod tests {
         assert!(t.columns[0].pk && !t.columns[0].nullable);
         assert_eq!(t.columns[2].ty, "timestamp with time zone");
         assert_eq!(t.columns[2].default.as_deref(), Some("now()"));
+
+        // Keys, foreign keys, checks and indexes, and the DDL built from them.
+        for sql in [
+            "create table boa_test.parent (a int, b text, primary key (a, b), unique (b))",
+            "create table boa_test.child (id int generated always as identity primary key, \
+             pa int not null, pb text, n int check (n > 0), \
+             total int generated always as (n * 2) stored, \
+             constraint child_parent_fkey foreign key (pa, pb) references boa_test.parent (a, b))",
+            "create index child_lower on boa_test.child (lower(pb)) include (n)",
+            "comment on table boa_test.child is 'kids'",
+            "create view boa_test.v as select id from boa_test.child",
+        ] {
+            q(sql, 10).await.unwrap();
+        }
+        let schemas = pg
+            .introspect("test", &db, &["boa_test".to_owned()])
+            .await
+            .unwrap();
+        let find = |name: &str| schemas[0].tables.iter().find(|t| t.name == name).unwrap();
+        let (parent, child) = (find("parent"), find("child"));
+        let pk = parent.constraints.iter().find(|c| c.kind == "p").unwrap();
+        assert_eq!(pk.columns, ["a", "b"]);
+        assert!(
+            parent
+                .constraints
+                .iter()
+                .any(|c| c.kind == "u" && c.columns == ["b"])
+        );
+        let fk = child.constraints.iter().find(|c| c.kind == "f").unwrap();
+        assert_eq!(fk.name, "child_parent_fkey");
+        assert_eq!(fk.columns, ["pa", "pb"]);
+        let r = fk.references.as_ref().unwrap();
+        assert_eq!(
+            (r.schema.as_str(), r.table.as_str()),
+            ("boa_test", "parent")
+        );
+        assert_eq!(r.columns, ["a", "b"]);
+        let check = child.constraints.iter().find(|c| c.kind == "c").unwrap();
+        assert_eq!(check.definition, "CHECK (n > 0)");
+        assert_eq!(check.columns, ["n"]);
+        assert_eq!(
+            child
+                .constraints
+                .iter()
+                .filter(|c| c.references.is_some())
+                .count(),
+            1
+        );
+        let ix = child
+            .indexes
+            .iter()
+            .find(|i| i.name == "child_lower")
+            .unwrap();
+        assert_eq!(ix.columns, ["lower(pb)"]);
+        assert!(!ix.unique && !ix.primary);
+        assert!(
+            ix.definition
+                .starts_with("CREATE INDEX child_lower ON boa_test.child")
+        );
+        assert!(
+            child
+                .indexes
+                .iter()
+                .any(|i| i.primary && i.columns == ["id"])
+        );
+        assert!(find("v").indexes.is_empty() && find("v").constraints.is_empty());
+
+        let ddl = pg
+            .table_ddl("test", &db, "boa_test", "child")
+            .await
+            .unwrap();
+        assert!(
+            ddl.starts_with(
+                "CREATE TABLE boa_test.child\n(\n    id integer GENERATED ALWAYS AS IDENTITY NOT NULL,\n    pa integer NOT NULL,\n    pb text,\n"
+            ),
+            "{ddl}"
+        );
+        assert!(
+            ddl.contains("\n    total integer GENERATED ALWAYS AS ("),
+            "{ddl}"
+        );
+        assert!(
+            ddl.contains("CONSTRAINT child_pkey PRIMARY KEY (id)"),
+            "{ddl}"
+        );
+        assert!(
+            ddl.contains(
+                "CONSTRAINT child_parent_fkey FOREIGN KEY (pa, pb) REFERENCES boa_test.parent(a, b)"
+            ),
+            "{ddl}"
+        );
+        assert!(
+            ddl.contains(
+                "\nCREATE INDEX child_lower ON boa_test.child USING btree (lower(pb)) INCLUDE (n);\n"
+            ),
+            "{ddl}"
+        );
+        // The primary key's index comes with its constraint.
+        assert!(!ddl.contains("INDEX child_pkey"), "{ddl}");
+        assert!(
+            ddl.ends_with("COMMENT ON TABLE boa_test.child IS 'kids';\n"),
+            "{ddl}"
+        );
+        let ddl = pg.table_ddl("test", &db, "boa_test", "v").await.unwrap();
+        assert!(ddl.starts_with("CREATE VIEW boa_test.v AS\n"), "{ddl}");
+        assert!(
+            ddl.ends_with(";\n") && ddl.contains("FROM boa_test.child"),
+            "{ddl}"
+        );
+        let ddl = pg
+            .table_ddl("test", &db, "boa_test", "Mixed")
+            .await
+            .unwrap();
+        assert!(
+            ddl.starts_with("CREATE TABLE boa_test.\"Mixed\"\n(\n    id integer NOT NULL,"),
+            "{ddl}"
+        );
+        assert!(pg.table_ddl("test", &db, "boa_test", "nope").await.is_err());
 
         // Cancel a running statement.
         let slow = q("select pg_sleep(10)", 10);

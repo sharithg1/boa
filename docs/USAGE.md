@@ -19,6 +19,23 @@ Like DataGrip, only picked databases and schemas are shown and introspected:
 click the "N of M" badge on a connection or database (defaults: the
 connection's database, the `public` schema).
 
+Under each table, after its columns, the explorer has DataGrip's **keys**,
+**foreign keys**, **indexes** and **checks** folders (empty ones are left
+out), read with the rest of the schema (one catalog query each, so large
+schemas stay fast). Primary-key columns show a yellow key, foreign-key
+columns a blue one. Right-click an entry to copy its name or definition.
+
+**DDL** (table toolbar, or "Show DDL" on a table in the explorer) opens the
+server's view of the relation in a new console: `CREATE TABLE` with column
+types, defaults, identity / generated columns, `NOT NULL` and constraints
+(`pg_get_constraintdef`), then the indexes that aren't part of a constraint
+(`pg_get_indexdef`), triggers and `COMMENT ON`s; views and materialized
+views come from `pg_get_viewdef`. Ownership, grants, storage options and
+column collations are left out. Needs PostgreSQL 12 or later.
+
+In a console, completion after `JOIN t ON` offers the conditions of the
+foreign keys between `t` and the tables before it (`o.user_id = u.id`).
+
 Settings are saved in the app config dir (`connections.json`), passwords
 too, in plain text for now (the file is owner-only on Unix).
 

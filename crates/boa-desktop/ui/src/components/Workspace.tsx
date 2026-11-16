@@ -33,8 +33,8 @@ import { backend, toBackendError, type QueryResult } from '@/lib/backend'
 import { Pager } from './Pager'
 import { ExportMenu } from './CsvExport'
 import { tableOwner, tableSource } from '@/state/csvExport'
-import type { Table } from '@/state/types'
-import { qualified, quoteIdent, type Catalog } from '@/lib/sql'
+import { openDdl } from '@/state/ddl'
+import { qualified, type Catalog } from '@/lib/sql'
 import { cn } from '@/lib/utils'
 import {
   DropdownMenu,
@@ -483,18 +483,6 @@ function QueryView({
   )
 }
 
-function ddl(schema: string, t: Table): string {
-  const cols = t.columns.map(
-    (c) =>
-      `    ${quoteIdent(c.name)} ${c.type}${c.nullable ? '' : ' not null'}${c.default ? ` default ${c.default}` : ''}`
-  )
-  const pk = t.columns.filter((c) => c.pk).map((c) => quoteIdent(c.name))
-  if (pk.length) cols.push(`    primary key (${pk.join(', ')})`)
-  return t.kind === 'view'
-    ? `create view ${qualified(schema, t.name)} as\n    select …;\n`
-    : `create table ${qualified(schema, t.name)}\n(\n${cols.join(',\n')}\n);\n`
-}
-
 type Load =
   | { state: 'loading' }
   | { state: 'ok'; result: QueryResult }
@@ -621,7 +609,8 @@ function TableView({
           <button
             type="button"
             className={TOOL_BTN}
-            onClick={() => newQueryTab(connectionId, database, ddl(tab.schema, table))}
+            disabled={!connected}
+            onClick={() => void openDdl(connectionId, database, tab.schema, tab.table)}
           >
             DDL
           </button>

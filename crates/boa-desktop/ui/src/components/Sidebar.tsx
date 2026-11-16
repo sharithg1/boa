@@ -1,8 +1,9 @@
 // Database Explorer, after DataGrip's: a header row (traffic-light inset,
 // sidebar toggle, title), a toolbar (new, refresh, console, collapse all,
 // previous / next database, search) and a tree of connection › database ›
-// schema › tables / views › table › columns, each level with its child
-// count. Click selects (a table opens as a preview tab, a database becomes
+// schema › tables / views › table › columns (then keys, foreign keys,
+// indexes and checks folders), each level with its child count. Click
+// selects (a table opens as a preview tab, a database becomes
 // the active one), double-click pins a table, the chevron or double-click
 // expands. Expanding a disconnected connection connects it. Arrow keys move
 // through the tree (→ expands / enters, ← collapses / goes to the parent,
@@ -25,13 +26,16 @@ import {
   FileDown,
   Folder,
   KeyRound,
+  ListOrdered,
   PanelLeft,
   Plug,
   Plus,
   RefreshCw,
+  ScrollText,
   Search,
   Server,
   Settings,
+  SquareCheck,
   SquareTerminal,
   Table2,
   Unplug
@@ -60,6 +64,8 @@ import { compactCount } from '@/lib/format'
 import { useTitleBarInset } from '@/lib/window-chrome'
 import { qualified } from '@/lib/sql'
 import { exportTable } from '@/state/csvExport'
+import { openDdl } from '@/state/ddl'
+import { columnKeys, metaFolders, type MetaFolderKind, type MetaItem } from '@/lib/tableMeta'
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -539,6 +545,10 @@ function useNodes(): Node[] {
                     <FileCode />
                     New console: select *
                   </ContextMenuItem>
+                  <ContextMenuItem onSelect={() => void openDdl(cid, db.name, schema.name, t.name)}>
+                    <ScrollText />
+                    Show DDL
+                  </ContextMenuItem>
                   <ContextMenuItem
                     onSelect={() => void exportTable(cid, db.name, schema.name, t.name)}
                   >
@@ -554,13 +564,18 @@ function useNodes(): Node[] {
               )
             })
             if (!expanded[tid]) continue
+            const keyOf = columnKeys(t)
             for (const c of t.columns) {
+              const key = keyOf.get(c.name)
               out.push({
                 id: `${tid}/${c.name}`,
                 parent: tid,
                 depth: 5,
-                icon: c.pk ? (
-                  <KeyRound className={cn(ICON, 'text-status-wait')} />
+                icon: key ? (
+                  <KeyRound
+                    className={cn(ICON, key === 'primary' ? 'text-status-wait' : 'text-link')}
+                    aria-label={key === 'primary' ? 'primary key' : 'foreign key'}
+                  />
                 ) : (
                   <Columns3 className={cn(ICON, 'text-dim')} />
                 ),
@@ -581,12 +596,71 @@ function useNodes(): Node[] {
                 )
               })
             }
+            // DataGrip's folders after the columns: keys, foreign keys, indexes, checks.
+            for (const f of metaFolders(schema.name, t)) {
+              const fid = `${tid}/#${f.kind}`
+              out.push({
+                id: fid,
+                parent: tid,
+                depth: 5,
+                icon: <Folder className={cn(ICON, 'text-quiet')} />,
+                label: f.kind,
+                meta: `${f.items.length}`,
+                expandable: true
+              })
+              if (!expanded[fid]) continue
+              for (const it of f.items) {
+                out.push({
+                  id: `${fid}/${it.name}`,
+                  parent: fid,
+                  depth: 6,
+                  icon: <MetaIcon folder={f.kind} item={it} />,
+                  label: it.name,
+                  mono: true,
+                  meta: <span className="font-mono">{it.detail}</span>,
+                  expandable: false,
+                  menu: (
+                    <>
+                      <ContextMenuItem onSelect={() => copy(it.name)}>
+                        <Copy />
+                        Copy name
+                      </ContextMenuItem>
+                      <ContextMenuItem onSelect={() => copy(it.definition)}>
+                        <FileCode />
+                        Copy definition
+                      </ContextMenuItem>
+                    </>
+                  )
+                })
+              }
+            }
           }
         }
       }
     }
   }
   return out
+}
+
+/** A key (primary / unique / foreign, DataGrip's colours), an index or a check. */
+function MetaIcon({ folder, item }: { folder: MetaFolderKind; item: MetaItem }) {
+  if (folder === 'checks') return <SquareCheck className={cn(ICON, 'text-dim')} />
+  if (folder === 'indexes')
+    return (
+      <ListOrdered className={cn(ICON, item.key === 'primary' ? 'text-status-wait' : 'text-dim')} />
+    )
+  return (
+    <KeyRound
+      className={cn(
+        ICON,
+        item.key === 'primary'
+          ? 'text-status-wait'
+          : item.key === 'foreign'
+            ? 'text-link'
+            : 'text-dim'
+      )}
+    />
+  )
 }
 
 function Tree() {

@@ -1,9 +1,14 @@
 // Simulated execution until the Rust side has drivers: deterministic sample
 // rows per table, and a tiny SQL front end that understands enough of
-// `SELECT … FROM [schema.]table [LIMIT n]` to return those rows. Anything
+// `SELECT … FROM [schema.]table [WHERE …] [ORDER BY …] [LIMIT n]` to return
+// those rows (state/mockQuery.ts evaluates simple conditions). Anything
 // else "succeeds" with an affected-rows count.
 import type { Column, Database, ResultColumn, Table } from './types'
 import { editedRows } from './mockEdits'
+import { filterAndSort, tailClauses } from './mockQuery'
+
+/** Sample rows a filtered or sorted mock query looks at (tables claim millions). */
+const MOCK_SCAN_ROWS = 20_000
 
 function hash(s: string): number {
   let h = 2166136261
@@ -111,7 +116,7 @@ export type Execution =
       table?: string
     }
   | { kind: 'affected'; count: number }
-  | { kind: 'error'; message: string }
+  | { kind: 'error'; message: string; code?: string }
 
 const unquote = (s: string) => s.replace(/^["`]|["`]$/g, '')
 
@@ -164,12 +169,21 @@ export function execute(
   if (!table) return { kind: 'error', message: `relation "${parts.join('.')}" does not exist` }
   const limit = /\blimit\s+(\d+)/i.exec(text)
   // Rows submitted from the data editor (state/mockEdits.ts) replace the samples.
-  const edited = editedRows(db?.name ?? '', schema, table.name)
-  const count = edited?.length ?? table.rows
+  let source = editedRows(db?.name ?? '', schema, table.name)
+  let count = source?.length ?? table.rows
+  const clauses = tailClauses(text.slice(from.index + from[0].length))
+  if (clauses.where || clauses.orderBy) {
+    // Filtered / sorted: over the first MOCK_SCAN_ROWS sample rows only.
+    const all = source ?? sampleRows(table, Math.min(count, MOCK_SCAN_ROWS))
+    const res = filterAndSort(tableColumns(table), all, clauses)
+    if (res.kind === 'error') return res
+    source = res.rows
+    count = source.length
+  }
   const total = Math.min(limit ? Number(limit[1]) : count, count)
   const end = Math.min(total, offset + rowLimit)
   let columns = tableColumns(table)
-  let rows = (edited ?? sampleRows(table, end)).slice(offset, end)
+  let rows = (source ?? sampleRows(table, end)).slice(offset, end)
   const list = /^select\s+(.*?)\s+from\b/is.exec(text)?.[1]?.trim()
   if (list && list !== '*') {
     const wanted = list.split(',').map((s) => unquote(s.trim().split('.').pop()!))

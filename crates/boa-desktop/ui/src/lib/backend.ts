@@ -279,7 +279,7 @@ function mockBackend(): Backend {
           hint: 'The connection is read-only (data source settings).'
         })
       const res = execute(dbOf(id, database), sql, limit, offset)
-      if (res.kind === 'error') return fail({ message: res.message, code: '42P01' })
+      if (res.kind === 'error') return fail({ message: res.message, code: res.code ?? '42P01' })
       if (res.kind === 'affected') {
         if (offset) throw { message: "This statement can't be paged", tx: s.tx }
         return { ...done, affected: res.count, tx: s.tx }

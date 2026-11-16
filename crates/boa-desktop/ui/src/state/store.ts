@@ -19,6 +19,9 @@ export type TableTab = {
   table: string
   /** Italic preview tab, replaced by the next single-click open (double-click pins). */
   preview?: boolean
+  /** Filter bar clauses (lib/tableQuery.ts), applied server-side; absent when empty. */
+  where?: string
+  orderBy?: string
 }
 export type Tab = QueryTab | TableTab
 
@@ -251,6 +254,20 @@ export function setQuerySql(key: string, id: string, sql: string) {
   patchWorkspace(key, (ws) => ({
     ...ws,
     tabs: ws.tabs.map((t) => (t.id === id && t.kind === 'query' ? { ...t, sql } : t))
+  }))
+}
+
+/** Sets a table tab's WHERE / ORDER BY; an empty clause is removed. */
+export function setTableQuery(key: string, id: string, q: { where?: string; orderBy?: string }) {
+  patchWorkspace(key, (ws) => ({
+    ...ws,
+    tabs: ws.tabs.map((t) => {
+      if (t.id !== id || t.kind !== 'table') return t
+      const { where: _w, orderBy: _o, ...rest } = t
+      const where = q.where?.trim()
+      const orderBy = q.orderBy?.trim()
+      return { ...rest, ...(where ? { where } : {}), ...(orderBy ? { orderBy } : {}) }
+    })
   }))
 }
 

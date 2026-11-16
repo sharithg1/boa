@@ -2,8 +2,9 @@
 // out like DataGrip: a query console is a toolbar (run / stop, transaction
 // mode, history, schema selector) above a SQL editor with a line-number
 // gutter; its results go to the bottom Database Output panel. A table tab is
-// the table's data editor: a toolbar (refresh, filter, DDL, console) above
-// the data grid. Execution is simulated (state/mockData.ts).
+// the table's data editor: a toolbar (refresh, filter, DDL, console) and the
+// WHERE / ORDER BY bar above the data grid. Execution is simulated
+// (state/mockData.ts).
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import {
   Check,
@@ -18,10 +19,12 @@ import {
 import {
   cancelQuery,
   dbKey,
+  describeError,
   findTable,
   newQueryTab,
   runQuery,
   setQuerySql,
+  setTableQuery,
   useStore,
   type QueryTab,
   type TableTab
@@ -29,12 +32,13 @@ import {
 import { usePrefs } from '@/state/prefs'
 import { openHistory } from '@/state/history'
 import { rangePath, statementsAt, type Range, type TextMetrics } from '@/lib/statements'
-import { backend, toBackendError, type QueryResult } from '@/lib/backend'
+import { backend, type QueryResult } from '@/lib/backend'
 import { Pager } from './Pager'
 import { ExportMenu } from './CsvExport'
 import { tableOwner, tableSource } from '@/state/csvExport'
 import type { Table } from '@/state/types'
 import { qualified, quoteIdent, type Catalog } from '@/lib/sql'
+import { cycleSort, sortState, tableSelect, type TableQuery } from '@/lib/tableQuery'
 import { cn } from '@/lib/utils'
 import {
   DropdownMenu,
@@ -55,6 +59,7 @@ import { StatementChooser } from './StatementChooser'
 import { complete, type CompletionResult } from '@/lib/complete'
 import { TxControls } from './TxControls'
 import { ConnectionStripe } from './ConnectionTag'
+import { TableFilterBar } from './TableFilterBar'
 
 export function Workspace() {
   const active = useStore((s) => s.active)
@@ -513,15 +518,16 @@ function TableView({
   const connected = useStore((s) => s.connections[connectionId]?.state === 'connected')
   const rowLimit = usePrefs((s) => s.rowLimit)
   const [nonce, setNonce] = useState(0)
+  const key = dbKey(connectionId, database)
+  // The statement paged through: the table with the filter bar's clauses.
+  const query = tableSelect(tab.schema, tab.table, { where: tab.where, orderBy: tab.orderBy })
+  const select = query.sql
+  const clauseError = query.error
   // Pending grid edits keep their page across tab switches (no reload under them).
   const [page, setPage] = useState(() => {
     const c = cachedEditPage(tab.id)
     return c
-      ? {
-          offset: c.offset,
-          rowLimit: c.rowLimit,
-          table: `select * from ${qualified(tab.schema, tab.table)}`
-        }
+      ? { offset: c.offset, rowLimit: c.rowLimit, table: select }
       : { offset: 0, rowLimit, table: '' }
   })
   const [paging, setPaging] = useState(false)
@@ -531,8 +537,7 @@ function TableView({
     return c ? { state: 'ok', result: c.result } : { state: 'loading' }
   })
   const table = findTable(connectionId, database, tab.schema, tab.table)
-  const select = `select * from ${qualified(tab.schema, tab.table)}`
-  // A new page size (or table) starts over from the first page.
+  // A new page size (or table, filter, sort) starts over from the first page.
   const offset = page.rowLimit === rowLimit && page.table === select ? page.offset : 0
   const setOffset = (o: number) => setPage({ offset: o, rowLimit, table: select })
 
@@ -541,18 +546,27 @@ function TableView({
     if (!connected) return
     const cached = cachedEditPage(tab.id)
     if (cached && cached.offset === offset && cached.rowLimit === rowLimit) return
+    if (clauseError) {
+      setLoad({ state: 'err', message: clauseError })
+      setPaging(false)
+      return
+    }
     let stale = false
     setLoad((l) => (l.state === 'ok' ? l : { state: 'loading' }))
     setPaging(true)
     backend
       .runQuery(connectionId, database, select, rowLimit, offset)
       .then((result) => !stale && setLoad({ state: 'ok', result }))
-      .catch((e) => !stale && setLoad({ state: 'err', message: toBackendError(e).message }))
+      .catch((e) => {
+        if (stale) return
+        const err = describeError(e)
+        setLoad({ state: 'err', message: err.detail ? `${err.error}\n${err.detail}` : err.error })
+      })
       .finally(() => !stale && setPaging(false))
     return () => {
       stale = true
     }
-  }, [connectionId, database, select, rowLimit, offset, connected, nonce])
+  }, [connectionId, database, select, clauseError, rowLimit, offset, connected, nonce])
 
   const edits = useTableEdits({
     tabId: tab.id,
@@ -566,6 +580,15 @@ function TableView({
     filter,
     onSubmitted: () => setNonce((n) => n + 1)
   })
+
+  /** New filter / sort (or the same, re-run): from the first page, after the edits guard. */
+  const applyQuery = (q: TableQuery) =>
+    edits.guard('change the filter or sort', () => {
+      setTableQuery(key, tab.id, q)
+      setPage({ offset: 0, rowLimit, table: tableSelect(tab.schema, tab.table, q).sql })
+      setNonce((n) => n + 1)
+    })
+  const sorted = sortState(tab.orderBy)
 
   return (
     <div className="flex h-full flex-col overflow-hidden">
@@ -611,11 +634,13 @@ function TableView({
         <ExportMenu
           source={{
             ...tableSource(connectionId, database, tab.schema, tab.table),
+            // What the tab shows: the whole result with its filter and sort.
+            sql: select,
             columns: load.state === 'ok' ? load.result.columns.map((c) => c.name) : undefined,
             rows: edits.rows
           }}
           owner={tableOwner(connectionId, database, tab.schema, tab.table)}
-          disabled={!connected}
+          disabled={!connected || !!clauseError}
         />
         {table && (
           <button
@@ -634,10 +659,16 @@ function TableView({
           <FileCode className="size-3.5" />
         </IconButton>
       </Toolbar>
+      <TableFilterBar
+        where={tab.where ?? ''}
+        orderBy={tab.orderBy ?? ''}
+        disabled={!connected}
+        onApply={applyQuery}
+      />
       {!connected ? (
         <div className="grid flex-1 place-items-center text-sm text-quiet">Not connected</div>
       ) : load.state === 'err' ? (
-        <div className="grid flex-1 place-items-center px-6 text-center text-sm text-status-err-text select-text">
+        <div className="grid flex-1 place-items-center px-6 text-center text-sm whitespace-pre-wrap text-status-err-text select-text">
           {load.message}
         </div>
       ) : load.state === 'loading' ? (
@@ -653,6 +684,11 @@ function TableView({
           pk={table?.columns.filter((c) => c.pk).map((c) => c.name)}
           table={qualified(tab.schema, tab.table)}
           editing={edits.editing}
+          serverSort={{
+            of: (column) => sorted.get(column),
+            onSort: (column, add) =>
+              applyQuery({ where: tab.where, orderBy: cycleSort(tab.orderBy, column, add) })
+          }}
         />
       )}
       {edits.dialogs}

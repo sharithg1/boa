@@ -95,7 +95,7 @@ export function mockExport(
       cancelled.delete(key)
       const started = Date.now()
       const res = execute(dbOf(id, database), sql, MOCK_EXPORT_ROWS)
-      if (res.kind === 'error') throw { message: res.message, code: '42P01' }
+      if (res.kind === 'error') throw { message: res.message, code: res.code ?? '42P01' }
       if (res.kind === 'affected')
         throw { message: 'Only queries can be exported; this statement modifies data' }
       const csv = toCsv(

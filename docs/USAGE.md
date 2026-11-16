@@ -63,7 +63,30 @@ preview (⌘↵) shows the exact statements (`UPDATE` / `DELETE` by the row's
 original key, `INSERT`), which then run in one transaction (or a savepoint
 inside an open one). Each `UPDATE` / `DELETE` must hit exactly one row; any
 error rolls everything back and points at the failing statement. Reloading,
-paging or closing a tab with pending changes asks first.
+paging, changing the filter or sort, or closing a tab with pending changes
+asks first.
+
+## Filtering and sorting table data
+
+The bar above a table's data has a **WHERE** and an **ORDER BY** field, like
+DataGrip's: type a condition (`status = 'active' and id > 10`) or an
+ordering (`created_at desc, id`) and press Enter; empty a field (or click its
+×) and press Enter to remove it, Escape puts back the applied text. They run
+on the server, as `select * from <table> where … order by …`, so they apply
+to every row, not just the loaded page, and the data starts again from the
+first page.
+
+Clicking a column header sorts by it: ascending, descending, then off. It
+rewrites the ORDER BY field (a column already in it changes in place, another
+one replaces the sort; ⇧-click adds it after the others), and the header
+shows an arrow, with its position when sorting by several columns.
+
+A bad condition shows the server's error in place of the rows, keeping what
+was typed. Each field must be one clause of one statement: a `;` outside a
+string, unbalanced parentheses or an unterminated string or comment are
+refused before anything runs. The filter and sort are kept per tab (and
+restored with the session); Export and "Open query console" use the filtered,
+sorted statement.
 
 ## Selecting and copying rows
 
@@ -144,4 +167,4 @@ tab, semicolon) and header row. NULL is an empty field, an empty string
 ## Session restore
 
 On launch Boa reopens the last session: the open tabs, each console's SQL,
-the active tab and the panel layout.
+each table tab's filter and sort, the active tab and the panel layout.

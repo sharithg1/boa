@@ -81,6 +81,14 @@ const span = (a: number, b: number) =>
 
 const plural = (n: number, w: string) => `${n.toLocaleString()} ${w}${n === 1 ? '' : 's'}`
 
+/** Sorting done by the query (table tabs' ORDER BY) instead of on the loaded rows. */
+export type ServerSort = {
+  /** A column's direction and position in the ORDER BY, if it is in it. */
+  of: (column: string) => { dir: 'asc' | 'desc'; rank: number } | undefined
+  /** Header click; `add` with ⇧ (sort by several columns). */
+  onSort: (column: string, add: boolean) => void
+}
+
 function initialWidth(c: ResultColumn, rows: (string | null)[][], i: number): number {
   let len = c.name.length + c.type.length + 4
   for (const r of rows.slice(0, 50)) len = Math.max(len, (r[i] ?? '<null>').length)
@@ -93,7 +101,8 @@ export function DataGrid({
   pk,
   firstRow = 1,
   table,
-  editing
+  editing,
+  serverSort
 }: {
   columns: ResultColumn[]
   rows: (string | null)[][]
@@ -105,6 +114,8 @@ export function DataGrid({
   table?: string
   /** Makes the grid an editor (table tabs only). */
   editing?: GridEditing
+  /** Header clicks sort through the query, not the loaded rows. */
+  serverSort?: ServerSort
 }) {
   const [sort, setSort] = useState<Sort>(null)
   /** The active cell (view coordinates). */
@@ -130,8 +141,11 @@ export function DataGrid({
   const scroller = useRef<HTMLDivElement>(null)
   const resize = useRef<{ i: number; x: number; w: number } | null>(null)
 
+  // Rows come sorted by the query when it sorts: shown in their order.
+  const localSort = serverSort ? null : sort
   const view = useMemo(() => {
     const idx = rows.map((_, i) => i)
+    const sort = localSort
     if (!sort) return idx
     const numeric = kinds[sort.col] === 'number'
     return idx.sort((a, b) => {
@@ -141,7 +155,7 @@ export function DataGrid({
       const d = numeric ? Number(x) - Number(y) : x.localeCompare(y)
       return d * sort.dir
     })
-  }, [rows, kinds, sort])
+  }, [rows, kinds, localSort])
 
   const selRow = sel ? (view[sel.r] ?? null) : null
   const onSelectRow = editing?.onSelectRow
@@ -266,8 +280,18 @@ export function DataGrid({
     return true
   }
 
-  const cycleSort = (col: number) =>
+  /** Re-sorting moves rows under a range / picked rows (view indices): drop them. */
+  const cycleSort = (col: number) => {
+    setAnchor(null)
+    setPicked(null)
     setSort((s) => (s?.col !== col ? { col, dir: 1 } : s.dir === 1 ? { col, dir: -1 } : null))
+  }
+  /** A header's sort arrow (and position, sorting by several columns). */
+  const sortOf = (i: number): { dir: 1 | -1; rank: number } | undefined => {
+    if (!serverSort) return sort?.col === i ? { dir: sort.dir, rank: 1 } : undefined
+    const s = serverSort.of(columns[i]!.name)
+    return s && { dir: s.dir === 'asc' ? 1 : -1, rank: s.rank }
+  }
 
   const onKeyDown = (e: KeyboardEvent) => {
     if (editing && !sel && (e.metaKey || e.ctrlKey) && e.code === 'KeyN') {
@@ -475,8 +499,10 @@ export function DataGrid({
               {columns.map((c, i) => (
                 <th
                   key={`${c.name}-${i}`}
-                  onClick={() => cycleSort(i)}
-                  title={`${c.name} ${c.type}\nClick to sort`}
+                  onClick={(e) =>
+                    serverSort ? serverSort.onSort(c.name, e.shiftKey) : cycleSort(i)
+                  }
+                  title={`${c.name} ${c.type}\nClick to sort${serverSort ? ' (⇧: by several columns)' : ''}`}
                   className="group sticky top-0 z-10 h-8 cursor-default border-r border-b border-border bg-background px-2.5 text-left font-normal hover:bg-hover"
                 >
                   <div className="flex min-w-0 items-center gap-1.5">
@@ -488,12 +514,15 @@ export function DataGrid({
                     )}
                     <span className="min-w-0 truncate text-soft">{c.name}</span>
                     <span className="ml-auto shrink-0 text-2xs text-sql-type">{c.type}</span>
-                    {sort?.col === i &&
-                      (sort.dir === 1 ? (
+                    {sortOf(i) &&
+                      (sortOf(i)!.dir === 1 ? (
                         <ArrowUp className="size-3 shrink-0 text-quiet" />
                       ) : (
                         <ArrowDown className="size-3 shrink-0 text-quiet" />
                       ))}
+                    {(sortOf(i)?.rank ?? 0) > 1 && (
+                      <span className="-ml-1 shrink-0 text-2xs text-dim">{sortOf(i)!.rank}</span>
+                    )}
                   </div>
                   <span
                     aria-hidden

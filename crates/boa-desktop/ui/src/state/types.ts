@@ -1,6 +1,8 @@
 // Shapes the UI works with. Schemas / tables / columns come from the Rust
 // side's `introspect` command (lib/backend.ts), or state/mock.ts in a browser.
 
+import type { SshTunnel } from '@/lib/backend'
+
 export type Engine = 'postgres' | 'mysql' | 'sqlite'
 
 export type ConnState = 'connected' | 'connecting' | 'disconnected' | 'failed'
@@ -61,6 +63,8 @@ export type Connection = {
   environment?: Environment
   /** Palette colour name (lib/connTag.ts); unset: the environment's colour. */
   color?: string
+  /** SSH tunnel settings (used when `enabled`). */
+  ssh?: SshTunnel
 }
 
 export type HistoryEntry = {

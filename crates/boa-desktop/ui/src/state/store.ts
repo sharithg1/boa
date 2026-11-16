@@ -349,6 +349,7 @@ function fromSaved(c: SavedConnection, prev?: Connection): Connection {
     readOnly: c.readOnly ?? false,
     environment: c.environment ?? undefined,
     color: c.color ?? undefined,
+    ssh: c.ssh ?? undefined,
     state: prev?.state ?? 'disconnected',
     latencyMs: prev?.latencyMs ?? null,
     serverVersion: prev?.serverVersion ?? null,
@@ -367,7 +368,8 @@ export function configOf(c: Connection): ConnConfig {
     sslMode: c.sslMode,
     readOnly: c.readOnly,
     environment: c.environment,
-    color: c.color
+    color: c.color,
+    ssh: c.ssh
   }
 }
 

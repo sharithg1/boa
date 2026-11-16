@@ -24,7 +24,8 @@ crates/boa-desktop/ui/           React frontend (Vite, Tailwind v4, shadcn/ui)
   src/state/history.ts           query history (persisted; QueryHistory.tsx is the view)
   src/components/                Sidebar, TitleBar, Workspace, BottomPanel, DataGrid, RightPanel, StatusBar, …
 crates/boa-desktop/src/          pg.rs (sessions, introspection, queries), tx.rs (transaction state probe),
-                                 connections.rs (saved settings + passwords), edits.rs (submitting grid edits),
+                                 connections.rs (saved settings + passwords), ssh.rs (SSH tunnels),
+                                 edits.rs (submitting grid edits),
                                  history.rs (query history)
 ```
 

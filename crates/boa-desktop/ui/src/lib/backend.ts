@@ -31,6 +31,24 @@ export type ConnConfig = {
   environment?: Environment
   /** Palette colour name (lib/connTag.ts). */
   color?: string
+  /** SSH tunnel (kept while disabled); host / port above are as the SSH server sees them. */
+  ssh?: SshTunnel
+}
+
+/** `agent`: the SSH agent and ssh's own keys; `key-file`: `ssh -i <identityFile>`. */
+export type SshAuth = 'agent' | 'key-file'
+
+/** Run with the system ssh, so ~/.ssh/config (aliases, ProxyJump), the agent and known_hosts apply. */
+export type SshTunnel = {
+  enabled: boolean
+  /** Host name, IP or ~/.ssh/config alias. */
+  host: string
+  /** Unset: 22 or the ~/.ssh/config Port. */
+  port?: number
+  /** Empty: the ~/.ssh/config User or the login name. */
+  user: string
+  auth: SshAuth
+  identityFile?: string
 }
 
 export type SavedConnection = ConnConfig & { hasPassword: boolean }
@@ -196,6 +214,10 @@ function mockBackend(): Backend {
     testConnection: async (config) => {
       await sleep(300)
       if (!config.host) throw { message: 'Host is empty' }
+      if (config.ssh?.enabled && !config.ssh.host.trim())
+        throw { message: 'SSH tunnel: the SSH host is empty' }
+      if (config.ssh?.enabled && config.ssh.auth === 'key-file' && !config.ssh.identityFile?.trim())
+        throw { message: 'SSH tunnel: choose a private key file' }
       return 'PostgreSQL 17.2 (mock)'
     },
     connect: async (id) => {

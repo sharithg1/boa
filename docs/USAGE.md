@@ -39,6 +39,27 @@ inside an open one). Each `UPDATE` / `DELETE` must hit exactly one row; any
 error rolls everything back and points at the failing statement. Reloading,
 paging or closing a tab with pending changes asks first.
 
+## Selecting and copying rows
+
+In any result grid or table data, click a cell, then drag, ⇧-click or
+⇧-arrow for a rectangular range; click a row number for the whole row, drag
+or ⇧-click for a run of rows, ⌘-click to add or remove one; ⌘A selects every
+loaded row, Esc goes back to the single cell. ⌘C copies the selection as
+tab-separated values (a single cell: just its text).
+
+The right-click menu's **Copy as ›** writes the selection as TSV (with or
+without a header), CSV, a Markdown table, JSON (an array of objects keyed by
+column name), SQL `INSERT` statements, SQL `UPDATE` statements (table data
+of tables with a primary key: sets the selected non-key columns, `WHERE` by
+the row's key) or an SQL `IN` list (`'a', 'b', 'c'`; one column only). The
+values are the ones shown, pending edits included. Column types decide the
+quoting: NULL is an empty field in TSV / CSV, `NULL` in Markdown and SQL,
+`null` in JSON; numbers and booleans are bare in SQL and JSON; json / jsonb
+values are embedded as JSON, Postgres arrays become JSON arrays; strings are
+escaped per format (`'` doubled in SQL, `|` and line breaks in Markdown, CSV
+quoting per RFC 4180). `INSERT`s from table data target its table; from a
+console result they target `MY_TABLE`, to be replaced.
+
 ## Transactions and guard rails
 
 Each database session (shared by every console and table tab on that

@@ -651,6 +651,7 @@ function TableView({
           rows={edits.rows}
           firstRow={filter.trim() ? 1 : offset + 1}
           pk={table?.columns.filter((c) => c.pk).map((c) => c.name)}
+          table={qualified(tab.schema, tab.table)}
           editing={edits.editing}
         />
       )}

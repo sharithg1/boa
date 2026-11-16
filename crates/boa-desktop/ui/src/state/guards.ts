@@ -2,7 +2,8 @@
 // flows await; components/GuardDialogs.tsx renders whichever is pending.
 // - before a destructive statement (lib/guard.ts), unless turned off in
 //   Settings; production-tagged connections always ask;
-// - before disconnecting, reconnecting or quitting with a transaction open.
+// - before disconnecting, reconnecting, quitting or restarting to update with a
+//   transaction open.
 
 import { create } from 'zustand'
 import { destructiveRisks, needsConfirm, type Risk } from '@/lib/guard'
@@ -25,7 +26,7 @@ export type Pending =
   | {
       kind: 'close-tx'
       /** What closes the sessions. */
-      action: 'disconnect' | 'reconnect' | 'quit'
+      action: CloseAction
       /** Connection names by id, for the list. */
       names: Record<string, string>
       open: OpenTx[]
@@ -75,8 +76,11 @@ export function confirmRun(
  * (all when omitted): no transaction is open, or the user accepts that it
  * is rolled back.
  */
+/** What closes the sessions (`update`: restarting to install an update). */
+export type CloseAction = 'disconnect' | 'reconnect' | 'quit' | 'update'
+
 export function confirmCloseTx(
-  action: 'disconnect' | 'reconnect' | 'quit',
+  action: CloseAction,
   names: Record<string, string>,
   connectionId?: string
 ): Promise<boolean> {

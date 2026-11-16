@@ -2,7 +2,8 @@
 //!
 //! Postgres only for now: saved connections (`connections`), sessions,
 //! introspection and query execution (`pg`), exposed to the React frontend
-//! in `ui/` as Tauri commands (see `ui/src/lib/backend.ts`).
+//! in `ui/` as Tauri commands (see `ui/src/lib/backend.ts`). In-app updates,
+//! the app menu and the About window are in `updater`.
 
 mod connections;
 mod edits;
@@ -10,33 +11,18 @@ mod error;
 mod history;
 mod pg;
 mod tx;
+mod updater;
 
 use connections::{ConnConfig, SavedConnection};
 use error::{CmdError, CmdResult};
 use history::History;
 use pg::{ConnectInfo, CsvOptions, ExportResult, Pg, QueryResult, Schema};
-use serde::Serialize;
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 use tauri::{AppHandle, Emitter, Manager, State};
 use tx::TxState;
-
-/// Version info for the frontend.
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct AppInfo {
-    pub name: &'static str,
-    pub version: &'static str,
-}
-
-#[tauri::command]
-fn app_info() -> AppInfo {
-    AppInfo {
-        name: env!("CARGO_PKG_NAME"),
-        version: env!("CARGO_PKG_VERSION"),
-    }
-}
 
 fn config_dir(app: &AppHandle) -> CmdResult<PathBuf> {
     app.path()
@@ -286,10 +272,21 @@ pub fn run() {
     init_logging();
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .menu(updater::menu)
+        .on_menu_event(|app, e| updater::on_menu_event(app, e.id().as_ref()))
         .manage(Pg::default())
         .manage(History::default())
+        .manage(Arc::new(updater::Updates::default()))
+        .setup(|app| {
+            updater::spawn_periodic_checks(app.handle().clone());
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
-            app_info,
+            updater::app_info,
+            updater::check_for_updates,
+            updater::update_status,
+            updater::install_update,
             list_connections,
             save_connection,
             delete_connection,

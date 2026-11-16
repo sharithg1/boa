@@ -17,6 +17,8 @@ tracing-subscriber = { version = "0.3.23", features = ["env-filter", "fmt"] }
 tauri = { version = "2.12.4", features = [] }
 tauri-build = { version = "2.7.3", features = [] }
 tauri-plugin-dialog = "=2.7.3"
+# In-app updates (src/updater.rs).
+tauri-plugin-updater = "2.14.0"
 
 [workspace.lints.rust]
 unsafe_code = "deny"

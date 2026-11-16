@@ -56,5 +56,11 @@
     "macOS": {
       "minimumSystemVersion": "11.0"
     }
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEE0MjdDMTgyMzJCNjc0MzkKUldRNWRMWXlnc0VucEUrSVdiM2ovMlUyVzdPVFZSWmxVSGQ0d0dkcjVwcVMvNWlYaU5LeWFtVGkK",
+      "endpoints": ["https://github.com/sharithg1/boa/releases/latest/download/latest.json"]
+    }
   }
 }

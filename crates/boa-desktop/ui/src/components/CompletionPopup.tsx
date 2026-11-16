@@ -10,6 +10,7 @@ import {
   Eye,
   KeyRound,
   LetterText,
+  Link2,
   SquareFunction,
   Table2,
   Type,
@@ -27,7 +28,8 @@ const ICON: Record<CompletionKind, [LucideIcon, string]> = {
   column: [Columns3, 'text-sql-column'],
   alias: [Table2, 'text-quiet'],
   function: [SquareFunction, 'text-sql-function'],
-  type: [Type, 'text-sql-type']
+  type: [Type, 'text-sql-type'],
+  join: [Link2, 'text-link']
 }
 
 /** Row height; the list shows at most VISIBLE rows before scrolling. */

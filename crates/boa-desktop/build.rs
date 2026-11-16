@@ -18,6 +18,7 @@ const COMMANDS: &[&str] = &[
     "disconnect",
     "list_schemas",
     "introspect",
+    "table_ddl",
     "run_query",
     "cancel_query",
     "export_csv",

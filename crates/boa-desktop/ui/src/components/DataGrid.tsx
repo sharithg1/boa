@@ -6,12 +6,20 @@
 // booleans, dates, uuids, JSON token by token); a JSON cell opens in the
 // JSON viewer on double-click, Enter or its hover button.
 //
+// Selection (DataGrip's): click a cell, drag or ⇧-click / ⇧-arrows for a
+// range; click a row number for the row, drag or ⇧-click for a run of rows,
+// ⌘-click to add / remove one; ⌘A selects every row, Esc goes back to the
+// active cell. ⌘C copies the selection as TSV (one cell: its text); the
+// right-click menu's "Copy as" writes it as CSV, Markdown, JSON, SQL, …
+// (lib/copyAs.ts).
+//
 // With `editing` (table tabs of tables with a primary key) it is DataGrip's
 // data editor: double-click, Enter or typing edits a cell (⇧↵ opens the
 // larger value editor), ⌘⌥N sets NULL, ⌘N adds a row, ⌘⌫ deletes the row,
 // ⌘⌥Z reverts, ⌘↵ submits; also from the right-click menu. Changed cells,
 // new and deleted rows are tinted; the changes themselves live outside.
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent, type PointerEvent } from 'react'
+import type { MouseEvent } from 'react'
 import { ArrowDown, ArrowUp, Braces, KeyRound } from 'lucide-react'
 import {
   ContextMenu,
@@ -19,8 +27,20 @@ import {
   ContextMenuItem,
   ContextMenuSeparator,
   ContextMenuShortcut,
+  ContextMenuSub,
+  ContextMenuSubContent,
+  ContextMenuSubTrigger,
   ContextMenuTrigger
 } from '@/components/ui/context-menu'
+import {
+  COPY_FORMATS,
+  type CopyFormat,
+  type CopySelection,
+  copyAs,
+  copyPlain,
+  FORMAT_NAME,
+  unavailable
+} from '@/lib/copyAs'
 import type { RowMark } from '@/lib/gridEdits'
 import { cn } from '@/lib/utils'
 import { pushToast } from '@/state/store'
@@ -54,6 +74,21 @@ const ALT = mac() ? '⌥' : 'Alt+'
 
 type Sort = { col: number; dir: 1 | -1 } | null
 
+type Cell = { r: number; c: number }
+
+const span = (a: number, b: number) =>
+  Array.from({ length: Math.abs(b - a) + 1 }, (_, i) => Math.min(a, b) + i)
+
+const plural = (n: number, w: string) => `${n.toLocaleString()} ${w}${n === 1 ? '' : 's'}`
+
+/** Sorting done by the query (table tabs' ORDER BY) instead of on the loaded rows. */
+export type ServerSort = {
+  /** A column's direction and position in the ORDER BY, if it is in it. */
+  of: (column: string) => { dir: 'asc' | 'desc'; rank: number } | undefined
+  /** Header click; `add` with ⇧ (sort by several columns). */
+  onSort: (column: string, add: boolean) => void
+}
+
 function initialWidth(c: ResultColumn, rows: (string | null)[][], i: number): number {
   let len = c.name.length + c.type.length + 4
   for (const r of rows.slice(0, 50)) len = Math.max(len, (r[i] ?? '<null>').length)
@@ -65,7 +100,9 @@ export function DataGrid({
   rows,
   pk,
   firstRow = 1,
-  editing
+  table,
+  editing,
+  serverSort
 }: {
   columns: ResultColumn[]
   rows: (string | null)[][]
@@ -73,11 +110,21 @@ export function DataGrid({
   firstRow?: number
   /** Primary-key column names, marked with a key in the header. */
   pk?: string[]
+  /** Qualified, quoted table name for "Copy as" SQL (table tabs). */
+  table?: string
   /** Makes the grid an editor (table tabs only). */
   editing?: GridEditing
+  /** Header clicks sort through the query, not the loaded rows. */
+  serverSort?: ServerSort
 }) {
   const [sort, setSort] = useState<Sort>(null)
-  const [sel, setSel] = useState<{ r: number; c: number } | null>(null)
+  /** The active cell (view coordinates). */
+  const [sel, setSel] = useState<Cell | null>(null)
+  /** The other corner of a range (or the first of a run of rows); null: just `sel`. */
+  const [anchor, setAnchor] = useState<Cell | null>(null)
+  /** Whole rows picked by their numbers (view indices), in place of a range. */
+  const [picked, setPicked] = useState<number[] | null>(null)
+  const drag = useRef<'cells' | 'rows' | null>(null)
   const [widths, setWidths] = useState<number[]>(() =>
     columns.map((c, i) => initialWidth(c, rows, i))
   )
@@ -94,8 +141,11 @@ export function DataGrid({
   const scroller = useRef<HTMLDivElement>(null)
   const resize = useRef<{ i: number; x: number; w: number } | null>(null)
 
+  // Rows come sorted by the query when it sorts: shown in their order.
+  const localSort = serverSort ? null : sort
   const view = useMemo(() => {
     const idx = rows.map((_, i) => i)
+    const sort = localSort
     if (!sort) return idx
     const numeric = kinds[sort.col] === 'number'
     return idx.sort((a, b) => {
@@ -105,14 +155,21 @@ export function DataGrid({
       const d = numeric ? Number(x) - Number(y) : x.localeCompare(y)
       return d * sort.dir
     })
-  }, [rows, kinds, sort])
+  }, [rows, kinds, localSort])
 
   const selRow = sel ? (view[sel.r] ?? null) : null
   const onSelectRow = editing?.onSelectRow
   useEffect(() => onSelectRow?.(selRow), [onSelectRow, selRow])
 
-  const select = (r: number, c: number) => {
+  /** Makes a cell the active one; `extend` keeps the anchor (a range to it). */
+  const focusCell = (r: number, c: number, extend = false) => {
+    setAnchor(extend ? ((picked ? null : anchor) ?? sel ?? { r, c }) : null)
+    setPicked(null)
     setSel({ r, c })
+  }
+
+  const select = (r: number, c: number, extend = false) => {
+    focusCell(r, c, extend)
     scroller.current
       ?.querySelector<HTMLElement>(`[data-cell="${r}:${c}"]`)
       ?.scrollIntoView({ block: 'nearest', inline: 'nearest' })
@@ -163,7 +220,7 @@ export function DataGrid({
       (v.includes('\n') || v.length > 200 || kinds[c] === 'json')
     )
       return openBig(r, c)
-    setSel({ r, c })
+    focusCell(r, c)
     setEditor({ r, c, text: initial ?? v ?? '', touched: initial !== undefined })
     return true
   }
@@ -223,8 +280,18 @@ export function DataGrid({
     return true
   }
 
-  const cycleSort = (col: number) =>
+  /** Re-sorting moves rows under a range / picked rows (view indices): drop them. */
+  const cycleSort = (col: number) => {
+    setAnchor(null)
+    setPicked(null)
     setSort((s) => (s?.col !== col ? { col, dir: 1 } : s.dir === 1 ? { col, dir: -1 } : null))
+  }
+  /** A header's sort arrow (and position, sorting by several columns). */
+  const sortOf = (i: number): { dir: 1 | -1; rank: number } | undefined => {
+    if (!serverSort) return sort?.col === i ? { dir: sort.dir, rank: 1 } : undefined
+    const s = serverSort.of(columns[i]!.name)
+    return s && { dir: s.dir === 'asc' ? 1 : -1, rank: s.rank }
+  }
 
   const onKeyDown = (e: KeyboardEvent) => {
     if (editing && !sel && (e.metaKey || e.ctrlKey) && e.code === 'KeyN') {
@@ -234,10 +301,20 @@ export function DataGrid({
     }
     if (!sel || editor) return
     if ((e.metaKey || e.ctrlKey) && e.key === 'c') {
-      const v = rows[view[sel.r]!]?.[sel.c]
-      void navigator.clipboard?.writeText(v ?? '').catch(() => {})
-      pushToast({ kind: 'info', title: 'Copied value' }, 1600)
+      copy()
       e.preventDefault()
+      return
+    }
+    if ((e.metaKey || e.ctrlKey) && e.key === 'a') {
+      e.preventDefault()
+      setAnchor(null)
+      setPicked(view.map((_, i) => i))
+      return
+    }
+    if (e.key === 'Escape' && (anchor || picked)) {
+      e.preventDefault()
+      setAnchor(null)
+      setPicked(null)
       return
     }
     if (editKey(e, sel.r, sel.c)) {
@@ -259,10 +336,132 @@ export function DataGrid({
     e.preventDefault()
     const r = Math.max(0, Math.min(view.length - 1, sel.r + m[0]))
     const c = Math.max(0, Math.min(columns.length - 1, sel.c + m[1]))
+    select(r, c, e.shiftKey)
+  }
+
+  // ── Selection and copying ──────────────────────────────────────────────
+
+  /** The selected view rows and columns (a range, or picked rows × every column). */
+  const region = useMemo(() => {
+    if (!sel) return null
+    if (picked) {
+      const rs = picked.filter((r) => r < view.length).sort((a, b) => a - b)
+      return { rows: rs, cols: columns.map((_, i) => i) }
+    }
+    const a = anchor ?? sel
+    return {
+      rows: span(a.r, sel.r).filter((r) => r < view.length),
+      cols: span(a.c, sel.c).filter((c) => c < columns.length)
+    }
+  }, [sel, anchor, picked, view.length, columns])
+  const pickedSet = useMemo(() => (picked ? new Set(picked) : null), [picked])
+  const multi = !!region && region.rows.length * region.cols.length > 1
+  const inRange = (r: number, c: number) => {
+    if (!sel || !region) return false
+    if (pickedSet) return pickedSet.has(r)
+    const a = anchor ?? sel
+    return (
+      r >= Math.min(a.r, sel.r) &&
+      r <= Math.max(a.r, sel.r) &&
+      c >= Math.min(a.c, sel.c) &&
+      c <= Math.max(a.c, sel.c)
+    )
+  }
+
+  /** Primary-key column indices, when every key column is in the result. */
+  const keyCols = useMemo(() => {
+    const idx = (pk ?? []).map((k) => columns.findIndex((c) => c.name === k))
+    return idx.length && idx.every((i) => i >= 0) ? idx : null
+  }, [pk, columns])
+
+  /** The selection for lib/copyAs: displayed values (edits included). */
+  const selection = (withRows = true): CopySelection | null => {
+    if (!region?.rows.length || !region.cols.length) return null
+    const ris = withRows ? region.rows.map((r) => view[r]!) : []
+    return {
+      columns: region.cols.map((c) => columns[c]!),
+      rows: ris.map((ri) => region.cols.map((c) => rows[ri]?.[c] ?? null)),
+      table,
+      key: keyCols
+        ? {
+            columns: keyCols.map((c) => columns[c]!),
+            rows: ris.map((ri) => keyCols.map((c) => rows[ri]?.[c] ?? null))
+          }
+        : undefined,
+      isDefault: editing ? (i, j) => !!editing.placeholder(ris[i]!, region.cols[j]!) : undefined
+    }
+  }
+
+  /** Copies the selection: TSV (⌘C), or `format` from "Copy as". */
+  const copy = (format?: CopyFormat) => {
+    const s = selection()
+    if (!s) return
+    let text: string
+    try {
+      text = format ? copyAs(format, s) : copyPlain(s)
+    } catch (err) {
+      pushToast({ kind: 'error', title: 'Copy failed', body: String(err) })
+      return
+    }
+    void navigator.clipboard?.writeText(text).catch(() => {})
+    const n = s.rows.length
+    const title =
+      !format && n === 1 && s.columns.length === 1
+        ? 'Copied value'
+        : format === 'sql-in'
+          ? `Copied ${plural(n, 'value')} as an SQL IN list`
+          : `Copied ${plural(n, 'row')}${format ? ` as ${FORMAT_NAME[format]}` : ''}`
+    pushToast({ kind: 'info', title }, 1600)
+  }
+
+  /** Mouse down on a cell: select it, extend to it (⇧) or start a drag. */
+  const cellDown = (e: MouseEvent, r: number, c: number) => {
+    // Right-click inside the selection keeps it for the context menu.
+    if (e.button === 2 && inRange(r, c)) return
+    if (e.button === 0 && e.shiftKey && sel) {
+      e.preventDefault()
+      scroller.current?.focus()
+      focusCell(r, c, true)
+      return
+    }
+    focusCell(r, c)
+    setAnchor({ r, c })
+    drag.current = e.button === 0 ? 'cells' : null
+  }
+
+  /** Mouse down on a row number: pick the row, a run to it (⇧), or toggle it (⌘). */
+  const rowDown = (e: MouseEvent, r: number) => {
+    const c = sel?.c ?? 0
+    if (e.button === 2 && pickedSet?.has(r)) return
+    e.preventDefault()
+    scroller.current?.focus()
+    drag.current = null
+    if (e.button === 0 && e.shiftKey && sel) {
+      setPicked(span(anchor?.r ?? sel.r, r))
+      setAnchor((a) => a ?? sel)
+    } else if (e.button === 0 && (e.metaKey || e.ctrlKey)) {
+      const base = picked ?? region?.rows ?? []
+      setPicked(base.includes(r) ? base.filter((x) => x !== r) : [...base, r])
+      setAnchor({ r, c })
+    } else {
+      setPicked([r])
+      setAnchor({ r, c })
+      if (e.button === 0) drag.current = 'rows'
+    }
     setSel({ r, c })
-    scroller.current
-      ?.querySelector<HTMLElement>(`[data-cell="${r}:${c}"]`)
-      ?.scrollIntoView({ block: 'nearest', inline: 'nearest' })
+  }
+
+  /** Dragging over a cell (or row number: `c` null) extends the selection. */
+  const dragOver = (e: MouseEvent, r: number, c: number | null) => {
+    if (!(e.buttons & 1)) {
+      drag.current = null
+      return
+    }
+    if (drag.current === 'cells' && c != null) setSel({ r, c })
+    else if (drag.current === 'rows' && anchor) {
+      setPicked(span(anchor.r, r))
+      setSel({ r, c: sel?.c ?? 0 })
+    }
   }
 
   const onResizeMove = (e: PointerEvent) => {
@@ -300,8 +499,10 @@ export function DataGrid({
               {columns.map((c, i) => (
                 <th
                   key={`${c.name}-${i}`}
-                  onClick={() => cycleSort(i)}
-                  title={`${c.name} ${c.type}\nClick to sort`}
+                  onClick={(e) =>
+                    serverSort ? serverSort.onSort(c.name, e.shiftKey) : cycleSort(i)
+                  }
+                  title={`${c.name} ${c.type}\nClick to sort${serverSort ? ' (⇧: by several columns)' : ''}`}
                   className="group sticky top-0 z-10 h-8 cursor-default border-r border-b border-border bg-background px-2.5 text-left font-normal hover:bg-hover"
                 >
                   <div className="flex min-w-0 items-center gap-1.5">
@@ -313,12 +514,15 @@ export function DataGrid({
                     )}
                     <span className="min-w-0 truncate text-soft">{c.name}</span>
                     <span className="ml-auto shrink-0 text-2xs text-sql-type">{c.type}</span>
-                    {sort?.col === i &&
-                      (sort.dir === 1 ? (
+                    {sortOf(i) &&
+                      (sortOf(i)!.dir === 1 ? (
                         <ArrowUp className="size-3 shrink-0 text-quiet" />
                       ) : (
                         <ArrowDown className="size-3 shrink-0 text-quiet" />
                       ))}
+                    {(sortOf(i)?.rank ?? 0) > 1 && (
+                      <span className="-ml-1 shrink-0 text-2xs text-dim">{sortOf(i)!.rank}</span>
+                    )}
                   </div>
                   <span
                     aria-hidden
@@ -342,6 +546,7 @@ export function DataGrid({
             {view.map((ri, r) => {
               const row = rows[ri]!
               const rowSel = sel?.r === r
+              const rowPicked = multi && (pickedSet ? pickedSet.has(r) : inRange(r, sel!.c))
               const mark = editing?.rowMark(ri)
               return (
                 <tr
@@ -353,6 +558,8 @@ export function DataGrid({
                   )}
                 >
                   <td
+                    onMouseDown={(e) => rowDown(e, r)}
+                    onMouseEnter={(e) => dragOver(e, r, null)}
                     title={
                       mark === 'inserted'
                         ? 'New row'
@@ -365,6 +572,7 @@ export function DataGrid({
                     className={cn(
                       'sticky left-0 h-7 border-r border-b border-border-subtle bg-background px-2 text-right text-2xs',
                       rowSel ? 'text-soft' : 'text-dim',
+                      rowPicked && 'bg-status-run/15 text-soft',
                       mark === 'inserted' && 'text-status-ok',
                       mark === 'deleted' && 'text-status-err',
                       mark === 'updated' && 'text-status-run'
@@ -383,13 +591,15 @@ export function DataGrid({
                       <td
                         key={c}
                         data-cell={`${r}:${c}`}
-                        onMouseDown={() => setSel({ r, c })}
+                        onMouseDown={(e) => cellDown(e, r, c)}
+                        onMouseEnter={(e) => dragOver(e, r, c)}
                         onDoubleClick={() => (editing ? startEdit(r, c) : openJson(r, c))}
                         className={cn(
                           'group/cell h-7 truncate border-r border-b border-border-subtle px-2.5 whitespace-nowrap',
                           kind === 'number' && 'text-right',
                           (json || inline) && 'relative pr-7',
                           edited && mark !== 'inserted' && 'bg-status-run/20',
+                          multi && !active && inRange(r, c) && 'bg-status-run/15',
                           active &&
                             'bg-status-run/25 outline outline-1 -outline-offset-1 outline-status-run',
                           v == null || placeholder ? 'text-dim italic' : VALUE_CLASS[kind]
@@ -443,7 +653,7 @@ export function DataGrid({
                             title="View JSON (Enter)"
                             onMouseDown={(e) => e.stopPropagation()}
                             onClick={() => {
-                              setSel({ r, c })
+                              focusCell(r, c)
                               openJson(r, c)
                             }}
                             className={cn(
@@ -471,6 +681,11 @@ export function DataGrid({
           {rows.length.toLocaleString()} row{rows.length === 1 ? '' : 's'}
         </span>
       </div>
+    </div>
+  )
+  // Outside the menu trigger: right-clicks in these dialogs aren't the grid's.
+  const dialogs = (
+    <>
       <ValueEditor
         target={big}
         onApply={(v) => {
@@ -491,13 +706,51 @@ export function DataGrid({
           scroller.current?.focus()
         }}
       />
-    </div>
+    </>
   )
-  if (!editing) return body
+  const shape = selection(false)
+  const copyMenu = (
+    <>
+      <ContextMenuItem disabled={!shape} onSelect={() => copy()}>
+        Copy<ContextMenuShortcut>{`${MOD}C`}</ContextMenuShortcut>
+      </ContextMenuItem>
+      <ContextMenuSub>
+        <ContextMenuSubTrigger disabled={!shape}>Copy as</ContextMenuSubTrigger>
+        <ContextMenuSubContent className="w-[190px]">
+          {COPY_FORMATS.map(({ format, label }) => {
+            const why = shape && unavailable(format, shape)
+            return (
+              <ContextMenuItem
+                key={format}
+                disabled={!shape || !!why}
+                title={why || undefined}
+                onSelect={() => copy(format)}
+              >
+                {label}
+              </ContextMenuItem>
+            )
+          })}
+        </ContextMenuSubContent>
+      </ContextMenuSub>
+    </>
+  )
   return (
-    <ContextMenu>
-      <ContextMenuTrigger asChild>{body}</ContextMenuTrigger>
-      <ContextMenuContent className="w-[220px]">
+    <>
+      <ContextMenu>
+        <ContextMenuTrigger asChild>{body}</ContextMenuTrigger>
+        <ContextMenuContent className="w-[220px]">
+          {copyMenu}
+          {editing && <ContextMenuSeparator />}
+          {editing && editMenu(editing)}
+        </ContextMenuContent>
+      </ContextMenu>
+      {dialogs}
+    </>
+  )
+
+  function editMenu(editing: GridEditing) {
+    return (
+      <>
         <ContextMenuItem
           disabled={!sel || selMark === 'deleted'}
           onSelect={() => sel && startEdit(sel.r, sel.c)}
@@ -543,7 +796,7 @@ export function DataGrid({
         <ContextMenuItem onSelect={editing.submit}>
           Preview and submit…<ContextMenuShortcut>{`${MOD}↵`}</ContextMenuShortcut>
         </ContextMenuItem>
-      </ContextMenuContent>
-    </ContextMenu>
-  )
+      </>
+    )
+  }
 }

@@ -10,6 +10,7 @@ mod edits;
 mod error;
 mod history;
 mod pg;
+mod ssh;
 mod tx;
 mod updater;
 
@@ -98,7 +99,7 @@ async fn list_schemas(pg: State<'_, Pg>, id: String, database: String) -> CmdRes
     pg.list_schemas(&id, &database).await
 }
 
-/// Tables and columns of `schemas` (the ones picked in the explorer).
+/// Tables, columns, indexes and constraints of `schemas` (the ones picked in the explorer).
 #[tauri::command]
 async fn introspect(
     pg: State<'_, Pg>,
@@ -107,6 +108,18 @@ async fn introspect(
     schemas: Vec<String>,
 ) -> CmdResult<Vec<Schema>> {
     pg.introspect(&id, &database, &schemas).await
+}
+
+/// DDL of one relation, assembled from the server's own renderings.
+#[tauri::command]
+async fn table_ddl(
+    pg: State<'_, Pg>,
+    id: String,
+    database: String,
+    schema: String,
+    table: String,
+) -> CmdResult<String> {
+    pg.table_ddl(&id, &database, &schema, &table).await
 }
 
 #[tauri::command]
@@ -295,6 +308,7 @@ pub fn run() {
             disconnect,
             list_schemas,
             introspect,
+            table_ddl,
             run_query,
             cancel_query,
             export_csv,
@@ -327,6 +341,10 @@ pub fn run() {
                     api.prevent_exit();
                     let _ = w.emit("quit-requested", ());
                 }
+            }
+            // The process exits without dropping state: kill the SSH tunnels.
+            if let tauri::RunEvent::Exit = event {
+                app.state::<Pg>().close_tunnels();
             }
         });
 }

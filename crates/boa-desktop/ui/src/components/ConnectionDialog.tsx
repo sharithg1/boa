@@ -3,7 +3,14 @@
 // the Rust side in the app config dir, passwords included (plain text for now).
 import { useEffect, useState, type FormEvent, type ReactNode } from 'react'
 import { CircleAlert, CircleCheck, Trash2 } from 'lucide-react'
-import { toBackendError, backend, type ConnConfig, type SslMode } from '@/lib/backend'
+import {
+  toBackendError,
+  backend,
+  type ConnConfig,
+  type SshAuth,
+  type SshTunnel,
+  type SslMode
+} from '@/lib/backend'
 import { configOf, connect, deleteConnection, saveConnection, useStore } from '@/state/store'
 import { setPrefs, usePrefs } from '@/state/prefs'
 import { Button } from '@/components/ui/button'
@@ -47,6 +54,38 @@ const blank = (): ConnConfig => ({
   sslMode: 'prefer',
   readOnly: false
 })
+
+const SSH_AUTH: [SshAuth, string][] = [
+  ['agent', 'SSH agent'],
+  ['key-file', 'Key file']
+]
+
+const blankSsh = (): SshTunnel => ({ enabled: false, host: '', user: '', auth: 'agent' })
+
+/** Tunnel settings to save: trimmed, empty optional fields left out; none if never filled in. */
+export function cleanSsh(ssh: SshTunnel | undefined): SshTunnel | undefined {
+  if (!ssh) return undefined
+  const host = ssh.host.trim()
+  const user = ssh.user.trim()
+  const identityFile = ssh.identityFile?.trim()
+  if (!ssh.enabled && !host && !user && !identityFile) return undefined
+  return {
+    enabled: ssh.enabled,
+    host,
+    ...(ssh.port ? { port: ssh.port } : {}),
+    user,
+    auth: ssh.auth,
+    ...(identityFile ? { identityFile } : {})
+  }
+}
+
+/** An enabled tunnel needs a host, a valid port and, for key-file auth, a key. */
+export function sshValid(ssh: SshTunnel | undefined): boolean {
+  if (!ssh?.enabled) return true
+  if (!ssh.host.trim()) return false
+  if (ssh.port != null && (ssh.port < 1 || ssh.port > 65535)) return false
+  return ssh.auth !== 'key-file' || !!ssh.identityFile?.trim()
+}
 
 /** Fills the fields from `postgres://user:pass@host:port/db?sslmode=…`. */
 export function parseUrl(url: string): { config: Partial<ConnConfig>; password?: string } | null {
@@ -113,8 +152,11 @@ export function ConnectionDialog() {
     name: cfg.name.trim() || `${cfg.database}@${cfg.host}`,
     host: cfg.host.trim(),
     user: cfg.user.trim(),
-    database: cfg.database.trim() || 'postgres'
+    database: cfg.database.trim() || 'postgres',
+    ssh: cleanSsh(cfg.ssh)
   })
+  const ssh = cfg.ssh ?? blankSsh()
+  const setSsh = (patch: Partial<SshTunnel>) => set({ ssh: { ...ssh, ...patch } })
   /** The password to send: what was typed, or null to use the stored one. */
   const typedPassword = () => (passwordTouched || !editing?.hasPassword ? password : null)
 
@@ -161,11 +203,12 @@ export function ConnectionDialog() {
     }
   }
 
-  const valid = cfg.host.trim() && cfg.user.trim() && cfg.port > 0 && cfg.port < 65536
+  const valid =
+    cfg.host.trim() && cfg.user.trim() && cfg.port > 0 && cfg.port < 65536 && sshValid(cfg.ssh)
 
   return (
     <Dialog open={open} onOpenChange={(o) => !o && close()}>
-      <DialogContent className="sm:max-w-[520px]">
+      <DialogContent className="max-h-[calc(100vh-2rem)] overflow-y-auto sm:max-w-[520px]">
         <form onSubmit={submit} className="flex flex-col gap-3">
           <DialogHeader>
             <DialogTitle>
@@ -310,6 +353,82 @@ export function ConnectionDialog() {
               Destructive statements on production always ask for confirmation.
             </p>
           )}
+
+          <div className="flex flex-col gap-3 border-t border-border pt-3">
+            <Label
+              className="flex w-fit cursor-pointer items-center gap-2 text-sm font-normal text-soft"
+              title="Connect through an SSH server, with the system ssh"
+            >
+              <Checkbox
+                checked={ssh.enabled}
+                onCheckedChange={(v) => setSsh({ enabled: v === true })}
+              />
+              SSH tunnel
+            </Label>
+            {ssh.enabled && (
+              <>
+                <div className="grid grid-cols-[1fr_96px] gap-3">
+                  <Field label="SSH host">
+                    <Input
+                      value={ssh.host}
+                      placeholder="bastion.example.com or a ~/.ssh/config alias"
+                      autoComplete="off"
+                      onChange={(e) => setSsh({ host: e.target.value })}
+                    />
+                  </Field>
+                  <Field label="SSH port">
+                    <Input
+                      inputMode="numeric"
+                      value={ssh.port ? String(ssh.port) : ''}
+                      placeholder="22"
+                      onChange={(e) =>
+                        setSsh({ port: Number(e.target.value.replace(/\D/g, '')) || undefined })
+                      }
+                    />
+                  </Field>
+                </div>
+                <div className="grid grid-cols-2 gap-3">
+                  <Field label="SSH user">
+                    <Input
+                      value={ssh.user}
+                      placeholder="from ~/.ssh/config"
+                      autoComplete="off"
+                      onChange={(e) => setSsh({ user: e.target.value })}
+                    />
+                  </Field>
+                  <Field label="Authentication">
+                    <Select value={ssh.auth} onValueChange={(v) => setSsh({ auth: v as SshAuth })}>
+                      <SelectTrigger className="w-full">
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {SSH_AUTH.map(([v, label]) => (
+                          <SelectItem key={v} value={v}>
+                            {label}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </Field>
+                </div>
+                {ssh.auth === 'key-file' && (
+                  <Field label="Private key file">
+                    <Input
+                      value={ssh.identityFile ?? ''}
+                      placeholder="~/.ssh/id_ed25519"
+                      className="font-mono text-xs"
+                      onChange={(e) => setSsh({ identityFile: e.target.value })}
+                    />
+                  </Field>
+                )}
+                <p className="-mt-1 text-xs text-quiet">
+                  Runs the system ssh, so ~/.ssh/config, the agent and known_hosts apply (keys with
+                  a passphrase must be in the agent). Host and port above are as the SSH server sees
+                  them.
+                </p>
+              </>
+            )}
+          </div>
 
           <TestResult test={test} />
 

@@ -50,7 +50,10 @@ const node = (name) =>
     ? p.locator(`[role="treeitem"][data-node-id="${name}"]`)
     : p
         .locator('[role="treeitem"]', {
-          has: p.locator('span.min-w-0', { hasText: new RegExp(`^${esc(name)}$`) })
+          // A connection's label also holds its tag (PROD) and state dot: match its name span.
+          has: p.locator('span.min-w-0, span.min-w-0 span.truncate', {
+            hasText: new RegExp(`^${esc(name)}$`)
+          })
         })
         .first()
 const setExpanded = async (name, open) => {
@@ -205,7 +208,10 @@ const commands = {
     p.getByRole('menuitem', { name: new RegExp(`^${esc(text.join(' '))}`) }).first().click(),
   // Fill a field by its label, placeholder or aria-label: `fill Host = db.example.com`.
   fill: async (...args) => {
-    const [label, value = ''] = args.join(' ').split(/\s+=\s*/)
+    // Split on the first ` = ` only, so the value may contain `=`.
+    const line = args.join(' ')
+    const m = line.match(/\s+=\s*/)
+    const [label, value] = m ? [line.slice(0, m.index), line.slice(m.index + m[0].length)] : [line, '']
     const byLabel = p.getByLabel(label, { exact: true })
     await ((await byLabel.count()) ? byLabel : p.getByPlaceholder(label)).first().fill(value)
   },

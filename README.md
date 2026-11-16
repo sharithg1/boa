@@ -34,12 +34,20 @@ everywhere, transactions are visible, and destructive statements ask first.
 ### Explore your schema
 A Database Explorer tree (connection › database › schema › tables ›
 columns), with row counts, showing only the databases and schemas you pick.
-Paste a `postgresql://` URL to add a data source.
+Keys, foreign keys, indexes and checks sit under each table, and the DDL
+view is the server's own definition. Paste a `postgresql://` URL to add a
+data source, and reach private servers through an SSH tunnel that uses your
+`~/.ssh/config` and agent.
 
 ### SQL consoles
 Syntax highlighting, context-aware completion from the live schema (tables,
 columns, aliases, CTEs, types), and <kbd>⌘↵</kbd> to run the statement under
 the caret. Results land in a paged grid with column types.
+
+### Filter and sort any table
+Type a `WHERE` condition or an `ORDER BY` above the grid, or click a column
+header to sort. It runs in the query, so it covers every row, not just the
+loaded page, and CSV export follows it.
 
 ### Edit data like a spreadsheet
 Edit cells, add and delete rows in any table with a primary key. Changes are
@@ -61,6 +69,10 @@ disconnecting or quitting with one open.
 Every statement you run is saved per connection, failures included. Search
 it as you type (<kbd>⌘⌥E</kbd>), then insert a statement into a console or
 open it in a new one.
+
+### Copy as
+Select cells or whole rows and copy them as TSV, CSV, Markdown, JSON, SQL
+`INSERT` / `UPDATE` statements or an `IN (…)` list.
 
 ### CSV export
 Export the whole result, not just the loaded page. Postgres streams it with

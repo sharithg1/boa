@@ -19,6 +19,9 @@ export type TableTab = {
   table: string
   /** Italic preview tab, replaced by the next single-click open (double-click pins). */
   preview?: boolean
+  /** Filter bar clauses (lib/tableQuery.ts), applied server-side; absent when empty. */
+  where?: string
+  orderBy?: string
 }
 export type Tab = QueryTab | TableTab
 
@@ -254,6 +257,20 @@ export function setQuerySql(key: string, id: string, sql: string) {
   }))
 }
 
+/** Sets a table tab's WHERE / ORDER BY; an empty clause is removed. */
+export function setTableQuery(key: string, id: string, q: { where?: string; orderBy?: string }) {
+  patchWorkspace(key, (ws) => ({
+    ...ws,
+    tabs: ws.tabs.map((t) => {
+      if (t.id !== id || t.kind !== 'table') return t
+      const { where: _w, orderBy: _o, ...rest } = t
+      const where = q.where?.trim()
+      const orderBy = q.orderBy?.trim()
+      return { ...rest, ...(where ? { where } : {}), ...(orderBy ? { orderBy } : {}) }
+    })
+  }))
+}
+
 export function activateTab(key: string, id: string) {
   patchWorkspace(key, (ws) => ({ ...ws, activeTab: id }))
 }
@@ -349,6 +366,7 @@ function fromSaved(c: SavedConnection, prev?: Connection): Connection {
     readOnly: c.readOnly ?? false,
     environment: c.environment ?? undefined,
     color: c.color ?? undefined,
+    ssh: c.ssh ?? undefined,
     state: prev?.state ?? 'disconnected',
     latencyMs: prev?.latencyMs ?? null,
     serverVersion: prev?.serverVersion ?? null,
@@ -367,7 +385,8 @@ export function configOf(c: Connection): ConnConfig {
     sslMode: c.sslMode,
     readOnly: c.readOnly,
     environment: c.environment,
-    color: c.color
+    color: c.color,
+    ssh: c.ssh
   }
 }
 

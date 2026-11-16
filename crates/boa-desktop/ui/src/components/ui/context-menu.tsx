@@ -1,6 +1,7 @@
 // shadcn-style context-menu (right click), styled like ./dropdown-menu for
 // Civet v3 (26px rows, 12.5px text, design menu shadow). Only the parts the
 // app uses.
+import { ChevronRightIcon } from 'lucide-react'
 import type * as React from 'react'
 import { cn } from '@/lib/utils'
 import { ContextMenu as ContextMenuPrimitive } from 'radix-ui'
@@ -76,11 +77,56 @@ function ContextMenuShortcut({ className, ...props }: React.ComponentProps<'span
   )
 }
 
+function ContextMenuSub({ ...props }: React.ComponentProps<typeof ContextMenuPrimitive.Sub>) {
+  return <ContextMenuPrimitive.Sub data-slot="context-menu-sub" {...props} />
+}
+
+function ContextMenuSubTrigger({
+  className,
+  children,
+  ...props
+}: React.ComponentProps<typeof ContextMenuPrimitive.SubTrigger>) {
+  return (
+    <ContextMenuPrimitive.SubTrigger
+      data-slot="context-menu-sub-trigger"
+      className={cn(
+        'flex h-[26px] cursor-pointer items-center gap-2 rounded-sm px-2 text-sm outline-hidden select-none focus:bg-hover-strong data-[disabled]:pointer-events-none data-[disabled]:opacity-50 data-[state=open]:bg-hover-strong',
+        className
+      )}
+      {...props}
+    >
+      {children}
+      <ChevronRightIcon className="ml-auto size-3.5 text-dim" />
+    </ContextMenuPrimitive.SubTrigger>
+  )
+}
+
+function ContextMenuSubContent({
+  className,
+  ...props
+}: React.ComponentProps<typeof ContextMenuPrimitive.SubContent>) {
+  return (
+    <ContextMenuPrimitive.Portal>
+      <ContextMenuPrimitive.SubContent
+        data-slot="context-menu-sub-content"
+        className={cn(
+          'z-50 min-w-[8rem] origin-(--radix-context-menu-content-transform-origin) overflow-hidden rounded-lg border bg-popover p-1 text-popover-foreground shadow-menu data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=closed]:zoom-out-95 data-[state=open]:animate-in data-[state=open]:fade-in-0 data-[state=open]:zoom-in-95',
+          className
+        )}
+        {...props}
+      />
+    </ContextMenuPrimitive.Portal>
+  )
+}
+
 export {
   ContextMenu,
   ContextMenuTrigger,
   ContextMenuContent,
   ContextMenuItem,
   ContextMenuSeparator,
-  ContextMenuShortcut
+  ContextMenuShortcut,
+  ContextMenuSub,
+  ContextMenuSubTrigger,
+  ContextMenuSubContent
 }

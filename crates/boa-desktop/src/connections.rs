@@ -42,6 +42,51 @@ pub struct ConnConfig {
     /// `red`); unset: the environment's colour.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub color: Option<String>,
+    /// SSH tunnel to reach the server through (kept when disabled, so the
+    /// fields survive turning it off and on again).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ssh: Option<SshTunnel>,
+}
+
+impl ConnConfig {
+    /// The SSH tunnel to connect through, when enabled.
+    pub fn tunnel(&self) -> Option<&SshTunnel> {
+        self.ssh.as_ref().filter(|t| t.enabled)
+    }
+}
+
+/// An SSH tunnel (DataGrip's SSH/SSL tab), run with the system `ssh` (see
+/// `crate::ssh`), so `~/.ssh/config` (host aliases, `ProxyJump`), the agent
+/// and `known_hosts` apply. No SSH password or passphrase is stored.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct SshTunnel {
+    #[serde(default)]
+    pub enabled: bool,
+    /// SSH server: a host name, IP or `~/.ssh/config` host alias.
+    #[serde(default)]
+    pub host: String,
+    /// Unset: 22, or the `Port` from `~/.ssh/config`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub port: Option<u16>,
+    /// Empty: the `User` from `~/.ssh/config`, or the login name.
+    #[serde(default)]
+    pub user: String,
+    #[serde(default)]
+    pub auth: SshAuth,
+    /// Private key for `SshAuth::KeyFile` (ssh expands `~`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub identity_file: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "kebab-case")]
+pub enum SshAuth {
+    /// The SSH agent and the keys ssh finds itself (`~/.ssh/config`, `~/.ssh/id_*`).
+    #[default]
+    Agent,
+    /// A private key file (`ssh -i`); one with a passphrase must be in the agent.
+    KeyFile,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -157,7 +202,7 @@ pub fn password(dir: &Path, id: &str) -> CmdResult<Option<String>> {
 
 #[cfg(test)]
 mod tests {
-    use super::{Environment, SslMode, Stored, get, list, upsert};
+    use super::{ConnConfig, Environment, SshAuth, SshTunnel, SslMode, Stored, get, list, upsert};
 
     #[test]
     fn old_files_load_and_new_fields_round_trip() {
@@ -190,5 +235,50 @@ mod tests {
         );
         assert!(list(&dir).unwrap()[0].has_password);
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn ssh_tunnel_settings() {
+        // Files without `ssh` load with no tunnel, and are written back without one.
+        let old: Stored = serde_json::from_str(
+            r#"{"id":"a","name":"A","host":"h","port":5432,"user":"u","database":"d"}"#,
+        )
+        .unwrap();
+        assert_eq!(old.config.ssh, None);
+        assert!(old.config.tunnel().is_none());
+        assert!(!serde_json::to_string(&old).unwrap().contains("ssh"));
+
+        // Only `enabled` and `host` given: the rest defaults.
+        let c: ConnConfig = serde_json::from_str(
+            r#"{"id":"a","name":"A","host":"h","port":5432,"user":"u","database":"d",
+                "ssh":{"enabled":true,"host":"bastion"}}"#,
+        )
+        .unwrap();
+        let t = c.tunnel().unwrap();
+        assert_eq!(
+            t,
+            &SshTunnel {
+                enabled: true,
+                host: "bastion".into(),
+                ..SshTunnel::default()
+            }
+        );
+        assert_eq!(t.auth, SshAuth::Agent);
+
+        // Every field round-trips; a disabled tunnel is kept but not used.
+        let mut c = c.clone();
+        c.ssh = Some(SshTunnel {
+            enabled: false,
+            host: "bastion.example.com".into(),
+            port: Some(2222),
+            user: "deploy".into(),
+            auth: SshAuth::KeyFile,
+            identity_file: Some("~/.ssh/id_ed25519".into()),
+        });
+        let json = serde_json::to_string(&c).unwrap();
+        assert!(json.contains(r#""auth":"key-file""#) && json.contains(r#""identityFile":"#));
+        let back: ConnConfig = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.ssh, c.ssh);
+        assert!(back.tunnel().is_none());
     }
 }

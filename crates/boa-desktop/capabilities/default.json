@@ -21,6 +21,7 @@
     "allow-disconnect",
     "allow-list-schemas",
     "allow-introspect",
+    "allow-table-ddl",
     "allow-run-query",
     "allow-cancel-query",
     "allow-export-csv",

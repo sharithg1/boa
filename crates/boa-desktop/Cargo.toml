@@ -31,7 +31,7 @@ tokio-postgres = "0.7.18"
 postgres-native-tls = "0.5.3"
 native-tls = "0.2.18"
 futures-util = "0.3.34"
-tokio = { version = "1.54.1", features = ["sync", "time"] }
+tokio = { version = "1.54.1", features = ["sync", "time", "rt", "process", "net", "io-util"] }
 
 [lints]
 workspace = true

@@ -16,7 +16,7 @@ import {
 } from '@/lib/csv'
 import { bytes } from '@/lib/format'
 import { qualified } from '@/lib/sql'
-import { describeError, logOutput, pushToast, tableKey, useStore } from './store'
+import { describeError, ensureConnected, logOutput, pushToast, tableKey, useStore } from './store'
 import type { ResultSet } from './types'
 
 /** What to export: a statement and, when there is one, the rows already loaded for it. */
@@ -111,6 +111,7 @@ function done(path: string, title: string, body: string) {
  */
 export async function exportCsv(src: ExportSource, owner: string) {
   const options = useCsvExport.getState().options
+  if (src.pageable) await ensureConnected(src.connectionId)
   const conn = useStore.getState().connections[src.connectionId]
   if (src.pageable && conn?.state !== 'connected') {
     pushToast({

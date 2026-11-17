@@ -12,6 +12,7 @@ import type { EditStatement } from './gridEdits'
 import { applyMockEdits } from '@/state/mockEdits'
 import { localHistoryStore, type HistoryRecord } from './history'
 import type { Environment, ResultColumn, Schema } from '@/state/types'
+import { trackLinks } from '@/state/links'
 import { trackTx, type TxState } from '@/state/tx'
 import { ddlFromMetadata } from './tableMeta'
 
@@ -56,6 +57,9 @@ export type SavedConnection = ConnConfig & { hasPassword: boolean }
 
 export type ConnectInfo = { serverVersion: string; databases: string[] }
 
+/** What `ping` found: databases whose session dropped with a transaction open (rolled back). */
+export type PingInfo = { lostTx: string[] }
+
 export type QueryResult = {
   columns: ResultColumn[]
   rows: (string | null)[][]
@@ -73,7 +77,12 @@ export type QueryResult = {
 /** What every backend call rejects with (Postgres details when the server raised it). */
 export type BackendError = {
   message: string
-  /** SQLSTATE (`42P01`) or an app code: `password_required`, `not_connected`. */
+  /**
+   * SQLSTATE (`42P01`) or an app code: `password_required`, `not_connected`,
+   * `unreachable` (the server can't be reached), `connection_lost` (it
+   * dropped during the call), `tx_lost` (it dropped with a transaction
+   * open, which the server rolled back).
+   */
   code?: string
   /** 1-based character offset into the statement. */
   position?: number
@@ -111,6 +120,11 @@ export type Backend = {
   /** Connects with these settings and disconnects; resolves to the server version. */
   testConnection(config: ConnConfig, password: string | null): Promise<string>
   connect(id: string, password?: string): Promise<ConnectInfo>
+  /**
+   * Checks an open connection without disturbing it, reopening sessions that
+   * dropped. Rejects with `not_connected` if it isn't open (e.g. a new launch).
+   */
+  ping(id: string): Promise<PingInfo>
   disconnect(id: string): Promise<void>
   /** Every schema name in the database (cheap; for the schema picker). */
   listSchemas(id: string, database: string): Promise<string[]>
@@ -149,6 +163,7 @@ const tauriBackend: Backend = {
   deleteConnection: (id) => invoke('delete_connection', { id }),
   testConnection: (config, password) => invoke('test_connection', { config, password }),
   connect: (id, password) => invoke('connect', { id, password: password ?? null }),
+  ping: (id) => invoke('ping', { id }),
   disconnect: (id) => invoke('disconnect', { id }),
   listSchemas: (id, database) => invoke('list_schemas', { id, database }),
   introspect: (id, database, schemas) => invoke('introspect', { id, database, schemas }),
@@ -201,6 +216,37 @@ function mockBackend(): Backend {
     if (!s) sessions.set(key, (s = { manual: false, tx: 'idle' }))
     return s
   }
+  // Dropped connections, for trying reconnects in the browser preview:
+  // `__boaMock.setDown(id, true)` takes a server away (its open
+  // transactions are lost), `false` brings it back.
+  const open = new Set<string>()
+  const down = new Set<string>()
+  const lostTx = new Set<string>()
+  const unreachable = {
+    message: 'error connecting to server: Connection refused',
+    code: 'unreachable'
+  }
+  const check = (id: string, database?: string) => {
+    if (down.has(id)) throw unreachable
+    if (database && lostTx.delete(`${id}\u0000${database}`))
+      throw {
+        message: 'The connection to the server was lost, so the open transaction was rolled back.',
+        code: 'tx_lost',
+        tx: 'idle'
+      }
+  }
+  if (typeof window !== 'undefined')
+    (window as unknown as { __boaMock?: object }).__boaMock = {
+      setDown(id: string, isDown: boolean) {
+        if (!isDown) return void down.delete(id)
+        down.add(id)
+        for (const [k, s] of sessions)
+          if (k.startsWith(`${id}\u0000`) && s.tx !== 'idle') {
+            lostTx.add(k)
+            s.tx = 'idle'
+          }
+      }
+    }
   return {
     real: false,
     listConnections: async () => [...saved.values()],
@@ -228,20 +274,34 @@ function mockBackend(): Backend {
       await sleep(400)
       const sample = samples.find((c) => c.id === id)
       if (!sample) throw { message: 'No server here: the browser preview only has sample data' }
+      check(id)
+      for (const k of lostTx) if (k.startsWith(`${id}\u0000`)) lostTx.delete(k)
+      open.add(id)
       return {
         serverVersion: sample.serverVersion ?? 'PostgreSQL 17.2',
         databases: sample.databases.map((d) => d.name)
       }
     },
+    ping: async (id) => {
+      await sleep(60)
+      if (!open.has(id)) throw { message: 'Not connected', code: 'not_connected' }
+      check(id)
+      const dbs = [...lostTx].filter((k) => k.startsWith(`${id}\u0000`))
+      for (const k of dbs) lostTx.delete(k)
+      return { lostTx: dbs.map((k) => k.split('\u0000')[1]!) }
+    },
     disconnect: async (id) => {
+      open.delete(id)
       for (const k of sessions.keys()) if (k.startsWith(`${id}\u0000`)) sessions.delete(k)
     },
     listSchemas: async (id, database) => {
       await sleep(80)
+      check(id)
       return dbOf(id, database)?.schemas.map((s) => s.name) ?? []
     },
     introspect: async (id, database, schemas) => {
       await sleep(150)
+      check(id)
       return dbOf(id, database)?.schemas.filter((s) => schemas.includes(s.name)) ?? []
     },
     tableDdl: async (id, database, schema, table) => {
@@ -257,6 +317,7 @@ function mockBackend(): Backend {
       cancelled.delete(key)
       const ms = 20 + Math.round(Math.random() * 400)
       await sleep(ms)
+      check(id, database)
       const s = session(key)
       const fail = (e: BackendError): never => {
         if (s.tx !== 'idle') s.tx = 'failed'
@@ -312,6 +373,7 @@ function mockBackend(): Backend {
     ...mockExport(dbOf, cancelled),
     applyEdits: async (id, database, statements) => {
       await sleep(150)
+      check(id, database)
       const s = session(`${id}\u0000${database}`)
       if (s.tx === 'failed')
         return {
@@ -345,4 +407,4 @@ function mockBackend(): Backend {
   }
 }
 
-export const backend: Backend = trackTx(isTauri() ? tauriBackend : mockBackend())
+export const backend: Backend = trackLinks(trackTx(isTauri() ? tauriBackend : mockBackend()))

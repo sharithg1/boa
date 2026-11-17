@@ -18,6 +18,7 @@ import {
 } from 'lucide-react'
 import {
   cancelQuery,
+  connect,
   dbKey,
   describeError,
   findTable,
@@ -142,7 +143,7 @@ function QueryView({
   tab: QueryTab
 }) {
   const key = dbKey(connectionId, database)
-  const connected = useStore((s) => s.connections[connectionId]?.state === 'connected')
+  const connecting = useStore((s) => s.connections[connectionId]?.state === 'connecting')
   const running = useStore((s) => !!s.running[tab.id])
   const db = useStore((s) =>
     s.connections[connectionId]?.databases.find((d) => d.name === database)
@@ -276,7 +277,8 @@ function QueryView({
         <IconButton
           label="Execute (⌘↵)"
           side="bottom"
-          disabled={!connected || !tab.sql.trim() || running}
+          // Running connects first when the connection isn't open.
+          disabled={connecting || !tab.sql.trim() || running}
           onClick={() => run(true)}
           className="text-status-ok hover:text-status-ok"
         >
@@ -655,7 +657,7 @@ function TableView({
         onApply={applyQuery}
       />
       {!connected ? (
-        <div className="grid flex-1 place-items-center text-sm text-quiet">Not connected</div>
+        <NotConnected connectionId={connectionId} />
       ) : load.state === 'err' ? (
         <div className="grid flex-1 place-items-center px-6 text-center text-sm whitespace-pre-wrap text-status-err-text select-text">
           {load.message}
@@ -696,4 +698,28 @@ function onStatement(sql: string, pos: number): Range[] {
   if (!r) return []
   const gap = pos < r.from ? sql.slice(pos, r.from) : pos > r.to ? sql.slice(r.to, pos) : ''
   return gap.includes('\n') ? [] : items
+}
+
+/** Stands in for a table's rows while its connection isn't open, with a way to open it. */
+function NotConnected({ connectionId }: { connectionId: string }) {
+  const state = useStore((s) => s.connections[connectionId]?.state)
+  const busy = state === 'connecting'
+  return (
+    <div className="grid flex-1 place-items-center text-sm text-quiet">
+      <div className="flex flex-col items-center gap-2">
+        <span>
+          {busy ? 'Connecting…' : state === 'reconnecting' ? 'Reconnecting…' : 'Not connected'}
+        </span>
+        {!busy && (
+          <button
+            type="button"
+            className="rounded-md border border-border px-2.5 py-1 text-xs text-foreground hover:bg-accent"
+            onClick={() => void connect(connectionId)}
+          >
+            {state === 'reconnecting' ? 'Retry now' : 'Connect'}
+          </button>
+        )}
+      </div>
+    </div>
+  )
 }

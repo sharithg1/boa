@@ -27,7 +27,7 @@ const KIND: Record<DotKind, string> = {
 export function connDot(state: ConnState): DotKind {
   return state === 'connected'
     ? 'ok'
-    : state === 'connecting'
+    : state === 'connecting' || state === 'reconnecting'
       ? 'wait'
       : state === 'failed'
         ? 'err'

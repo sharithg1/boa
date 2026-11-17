@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { nextTabNumber, parseSession } from './session'
+import { connectionsToRestore, nextTabNumber, parseSession } from './session'
 import { dbKey, tableKey } from './store'
 
 const saved = {
@@ -97,5 +97,25 @@ describe('nextTabNumber', () => {
   it('is past every restored tab id', () => {
     expect(nextTabNumber(parseSession(JSON.stringify(saved), ['c1'])!)).toBe(13)
     expect(nextTabNumber(parseSession('{}', [])!)).toBe(1)
+  })
+})
+
+describe('connections to restore', () => {
+  it('reopens the selected connection first, then the others that were open', () => {
+    const raw = JSON.stringify({ ...saved, wanted: { c2: true, c1: true, gone: true, c3: 'yes' } })
+    const s = parseSession(raw, ['c1', 'c2', 'c3'])!
+    expect(s.wanted).toEqual({ c2: true, c1: true })
+    expect(connectionsToRestore(s)).toEqual(['c1', 'c2'])
+  })
+
+  it('reopens just the selected one for sessions saved before open connections were kept', () => {
+    const s = parseSession(JSON.stringify(saved), ['c1'])!
+    expect(s.wanted).toBeUndefined()
+    expect(connectionsToRestore(s)).toEqual(['c1'])
+  })
+
+  it('reopens the open ones when nothing was selected', () => {
+    const raw = JSON.stringify({ ...saved, active: null, wanted: { c1: true } })
+    expect(connectionsToRestore(parseSession(raw, ['c1'])!)).toEqual(['c1'])
   })
 })

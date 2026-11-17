@@ -15,6 +15,7 @@ const COMMANDS: &[&str] = &[
     "delete_connection",
     "test_connection",
     "connect",
+    "ping",
     "disconnect",
     "list_schemas",
     "introspect",

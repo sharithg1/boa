@@ -16,7 +16,7 @@ use crate::error::{CmdError, CmdResult};
 use serde::Serialize;
 use std::collections::HashMap;
 use std::fmt::Write as _;
-use tokio_postgres::Row;
+use tokio_postgres::{Client, Row};
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -418,53 +418,59 @@ impl Pg {
         schema: &str,
         table: &str,
     ) -> CmdResult<String> {
-        let s = self.session(id, database).await?;
-        let c = &s.client;
-        let rel = c
-            .query_opt(DDL_RELATION, &[&schema, &table])
-            .await?
-            .ok_or_else(|| CmdError::msg(format!("{schema}.{table} not found")))?;
-        let oid: u32 = rel.get(0);
-        let (columns, constraints, indexes, triggers) = futures_util::future::try_join4(
-            c.query(DDL_COLUMNS, &[&oid]),
-            c.query(DDL_CONSTRAINTS, &[&oid]),
-            c.query(DDL_INDEXES, &[&oid]),
-            c.query(DDL_TRIGGERS, &[&oid]),
-        )
-        .await?;
-        let item = |r: &Row, name: usize, def: usize| DdlItem {
-            name: r.get(name),
-            definition: r.get::<_, Option<String>>(def).unwrap_or_default(),
-            comment: r.get(2),
-        };
-        Ok(build_ddl(&DdlParts {
-            relkind: rel.get(1),
-            persistence: rel.get(2),
-            qualified: rel.get(3),
-            view_def: rel.get(4),
-            partition_key: rel.get(5),
-            foreign_server: rel.get(6),
-            comment: rel.get(7),
-            columns: columns
-                .iter()
-                .map(|r| DdlColumn {
-                    name: r.get(0),
-                    ty: r.get(1),
-                    not_null: r.get(2),
-                    default: r.get(3),
-                    identity: r.get(4),
-                    generated: r.get(5),
-                    comment: r.get(6),
-                })
-                .collect(),
-            constraints: constraints.iter().map(|r| item(r, 0, 1)).collect(),
-            indexes: indexes.iter().map(|r| item(r, 1, 0)).collect(),
-            triggers: triggers
-                .iter()
-                .filter_map(|r| r.get::<_, Option<String>>(0))
-                .collect(),
-        }))
+        self.read(id, database, |s| async move {
+            ddl_on(&s.client, schema, table).await
+        })
+        .await
     }
+}
+
+/// DDL of one relation, read with `c`.
+async fn ddl_on(c: &Client, schema: &str, table: &str) -> CmdResult<String> {
+    let rel = c
+        .query_opt(DDL_RELATION, &[&schema, &table])
+        .await?
+        .ok_or_else(|| CmdError::msg(format!("{schema}.{table} not found")))?;
+    let oid: u32 = rel.get(0);
+    let (columns, constraints, indexes, triggers) = futures_util::future::try_join4(
+        c.query(DDL_COLUMNS, &[&oid]),
+        c.query(DDL_CONSTRAINTS, &[&oid]),
+        c.query(DDL_INDEXES, &[&oid]),
+        c.query(DDL_TRIGGERS, &[&oid]),
+    )
+    .await?;
+    let item = |r: &Row, name: usize, def: usize| DdlItem {
+        name: r.get(name),
+        definition: r.get::<_, Option<String>>(def).unwrap_or_default(),
+        comment: r.get(2),
+    };
+    Ok(build_ddl(&DdlParts {
+        relkind: rel.get(1),
+        persistence: rel.get(2),
+        qualified: rel.get(3),
+        view_def: rel.get(4),
+        partition_key: rel.get(5),
+        foreign_server: rel.get(6),
+        comment: rel.get(7),
+        columns: columns
+            .iter()
+            .map(|r| DdlColumn {
+                name: r.get(0),
+                ty: r.get(1),
+                not_null: r.get(2),
+                default: r.get(3),
+                identity: r.get(4),
+                generated: r.get(5),
+                comment: r.get(6),
+            })
+            .collect(),
+        constraints: constraints.iter().map(|r| item(r, 0, 1)).collect(),
+        indexes: indexes.iter().map(|r| item(r, 1, 0)).collect(),
+        triggers: triggers
+            .iter()
+            .filter_map(|r| r.get::<_, Option<String>>(0))
+            .collect(),
+    }))
 }
 
 #[cfg(test)]

@@ -17,7 +17,7 @@ mod updater;
 use connections::{ConnConfig, SavedConnection};
 use error::{CmdError, CmdResult};
 use history::History;
-use pg::{ConnectInfo, CsvOptions, ExportResult, Pg, QueryResult, Schema};
+use pg::{ConnectInfo, CsvOptions, ExportResult, Pg, PingInfo, QueryResult, Schema};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -86,6 +86,13 @@ async fn connect(
         .ok_or_else(|| CmdError::msg("Unknown connection"))?;
     let password = password.or(stored);
     pg.connect(config, password).await
+}
+
+/// Checks an open connection, reopening dropped sessions; reports the
+/// transactions lost with them. Fails with `not_connected` if it isn't open.
+#[tauri::command]
+async fn ping(pg: State<'_, Pg>, id: String) -> CmdResult<PingInfo> {
+    pg.ping(&id).await
 }
 
 #[tauri::command]
@@ -305,6 +312,7 @@ pub fn run() {
             delete_connection,
             test_connection,
             connect,
+            ping,
             disconnect,
             list_schemas,
             introspect,

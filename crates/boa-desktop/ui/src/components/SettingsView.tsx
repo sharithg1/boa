@@ -366,7 +366,7 @@ function ConnectionsPage() {
                   disabled={c.state === 'connecting'}
                   onClick={() => connect(id)}
                 >
-                  Connect
+                  {c.state === 'reconnecting' ? 'Retry now' : 'Connect'}
                 </button>
               )}
             </div>

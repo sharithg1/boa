@@ -43,6 +43,9 @@ struct Session {
     /// and that hasn't been reported yet: the next statement (or `ping`)
     /// says so instead of running as if nothing happened.
     lost_tx: AtomicBool,
+    /// Stopped answering (`ping`) while its socket still looks open, as
+    /// after sleep or a network change: replaced on next use, like a closed one.
+    dead: AtomicBool,
 }
 
 struct Open {
@@ -129,6 +132,7 @@ async fn open_session(
         manual: AtomicBool::new(false),
         read_only: config.read_only,
         lost_tx: AtomicBool::new(false),
+        dead: AtomicBool::new(false),
     })
 }
 
@@ -174,21 +178,37 @@ fn lost(s: &Session, e: CmdError, had_tx: bool) -> CmdError {
     }
 }
 
-/// A statement that only reads, so it can be re-run after the connection
-/// dropped under it: other pages of a pageable one, and plain queries.
+/// The connection dropped while `sql` was ending the transaction: it may
+/// have been committed before the answer was lost.
+fn commit_unknown(s: &Session, e: CmdError) -> CmdError {
+    s.tx.set(TxState::Idle);
+    CmdError {
+        tx: Some(TxState::Idle),
+        detail: Some(e.message),
+        hint: Some("Check the data before running the changes again.".into()),
+        ..CmdError::code(
+            "connection_lost",
+            "The connection to the server was lost while committing: the transaction may or \
+             may not have been committed",
+        )
+    }
+}
+
+/// `sql` (one statement or several) commits the open transaction.
+fn commits(sql: &str) -> bool {
+    sql.split(';')
+        .any(|part| matches!(leading_keyword(part).as_str(), "commit" | "end"))
+}
+
+/// A statement that can be re-run after the connection dropped under it
+/// (it may have run already): other pages of a pageable one, which paging
+/// re-runs anyway, and `TABLE` / `SHOW`. Not `SELECT`, which can call
+/// functions that write (`nextval`, user functions), nor several statements.
 fn safe_to_retry(sql: &str, offset: usize) -> bool {
     if offset > 0 {
         return true;
     }
-    match leading_keyword(sql).as_str() {
-        "values" | "table" | "show" => true,
-        // Not `SELECT … INTO new_table`.
-        "select" => !sql
-            .to_ascii_lowercase()
-            .split(|c: char| !c.is_ascii_alphanumeric() && c != '_')
-            .any(|w| w == "into"),
-        _ => false,
-    }
+    !sql.contains(';') && matches!(leading_keyword(sql).as_str(), "table" | "show")
 }
 
 #[derive(Debug, Serialize)]
@@ -453,7 +473,7 @@ impl Pg {
         let mut manual = false;
         let mut lost_tx = false;
         if let Some(s) = sessions.get(&key) {
-            if !s.client.is_closed() {
+            if !s.client.is_closed() && !s.dead.load(Ordering::Relaxed) {
                 return Ok(s.clone());
             }
             // Reopened after the connection dropped: same mode, no
@@ -507,10 +527,18 @@ impl Pg {
         }
     }
 
-    /// Checks that the connection still works, without disturbing it: idle
-    /// sessions that don't answer are dropped (reopened on next use), then
-    /// the default database's session is reopened if needed and asked for a
-    /// round trip. Reports the transactions lost with dropped sessions.
+    /// Checks that the connection still works, without disturbing it, and
+    /// reports the transactions lost with sessions that dropped.
+    ///
+    /// Idle sessions are asked for a round trip; one that doesn't answer is
+    /// marked dead, to be replaced (in the same transaction mode) on next
+    /// use. Busy ones (a statement holds a reference) are left alone: the
+    /// round trip would queue behind a long query and look like a dead
+    /// connection. So is one holding a transaction, which a slow server
+    /// must not cost. The connection works if an idle session answered, or
+    /// the default database's is busy, else if that one (reopened if it
+    /// dropped) answers. Lost transactions are only reported, and so
+    /// cleared, once the connection is known to work.
     pub async fn ping(&self, id: &str) -> CmdResult<PingInfo> {
         let open = self
             .open
@@ -519,51 +547,67 @@ impl Pg {
             .get(id)
             .cloned()
             .ok_or_else(|| CmdError::code("not_connected", "Not connected"))?;
-        // Busy sessions (a statement holds a reference) are left alone: a
-        // long query would make them look dead.
-        let idle: Vec<(String, Arc<Session>)> = self
+        let default_db = &open.config.database;
+        let usable = |s: &Session| !s.client.is_closed() && !s.dead.load(Ordering::Relaxed);
+        let sessions: Vec<(String, Arc<Session>, bool)> = self
             .sessions
             .lock()
             .await
             .iter()
-            .filter(|((cid, _), s)| cid == id && Arc::strong_count(s) == 1)
-            .map(|((_, db), s)| (db.clone(), s.clone()))
+            .filter(|((cid, _), _)| cid == id)
+            .map(|((_, db), s)| {
+                let busy = Arc::strong_count(s) > 1;
+                (db.clone(), s.clone(), busy)
+            })
             .collect();
-        let checks = idle.into_iter().map(|(db, s)| async move {
-            let alive = !s.client.is_closed() && answers(&s).await;
-            (db, s, alive)
-        });
-        let checked = futures_util::future::join_all(checks).await;
-        let mut lost_tx = Vec::new();
-        {
-            let mut sessions = self.sessions.lock().await;
-            for (db, s, alive) in checked {
-                let had_tx = s.lost_tx.swap(false, Ordering::Relaxed)
-                    || (!alive && s.tx.get() != TxState::Idle);
-                if had_tx {
-                    lost_tx.push(db.clone());
+        let checks = sessions
+            .iter()
+            .filter(|(_, s, busy)| !busy && usable(s))
+            .map(|(_, s, _)| async move {
+                let ok = answers(s).await;
+                if !ok && s.tx.get() == TxState::Idle {
+                    s.dead.store(true, Ordering::Relaxed);
                 }
-                if !alive {
-                    s.tx.set(TxState::Idle);
-                    let key = (id.to_owned(), db);
-                    if sessions.get(&key).is_some_and(|cur| Arc::ptr_eq(cur, &s)) {
-                        sessions.remove(&key);
-                    }
+                ok
+            });
+        let answered = futures_util::future::join_all(checks)
+            .await
+            .into_iter()
+            .any(|ok| ok);
+        let default_busy = sessions
+            .iter()
+            .any(|(db, s, busy)| db == default_db && *busy && usable(s));
+        drop(sessions);
+        if !answered && !default_busy {
+            let s = self.session(id, default_db).await?;
+            if !answers(&s).await {
+                if s.tx.get() == TxState::Idle {
+                    s.dead.store(true, Ordering::Relaxed);
                 }
+                return Err(CmdError::code(
+                    crate::error::UNREACHABLE,
+                    "The server did not answer",
+                ));
             }
         }
-        let s = self.session(id, &open.config.database).await?;
-        if !answers(&s).await {
-            return Err(CmdError::code(
-                crate::error::UNREACHABLE,
-                "The server did not answer",
-            ));
-        }
-        if s.lost_tx.swap(false, Ordering::Relaxed) {
-            lost_tx.push(open.config.database.clone());
+        // The connection works: report the lost transactions. Not those of
+        // busy sessions, whose statement reports it itself.
+        let mut lost_tx = Vec::new();
+        for ((cid, db), s) in self.sessions.lock().await.iter() {
+            if cid != id || Arc::strong_count(s) > 1 {
+                continue;
+            }
+            let mut lost = s.lost_tx.swap(false, Ordering::Relaxed);
+            if !usable(s) && s.tx.get() != TxState::Idle {
+                // Its replacement then doesn't report it again.
+                s.tx.set(TxState::Idle);
+                lost = true;
+            }
+            if lost {
+                lost_tx.push(db.clone());
+            }
         }
         lost_tx.sort();
-        lost_tx.dedup();
         Ok(PingInfo { lost_tx })
     }
 
@@ -690,7 +734,11 @@ impl Pg {
                         retried = true;
                         continue;
                     }
-                    return Err(lost(&s, e.clone(), had_tx));
+                    return Err(if had_tx && commits(text) {
+                        commit_unknown(&s, e.clone())
+                    } else {
+                        lost(&s, e.clone(), had_tx)
+                    });
                 }
             }
             let probe = tx::probe(&s.client).await;
@@ -945,8 +993,9 @@ async fn restore_read_only(s: &Session) -> CmdError {
 
 #[cfg(test)]
 mod tests {
-    use super::{CsvOptions, Pg, leading_keyword, open_session, safe_to_retry};
+    use super::{CsvOptions, Pg, commits, leading_keyword, open_session, safe_to_retry};
     use crate::connections::{ConnConfig, SslMode};
+    use crate::tx::TxState;
 
     #[test]
     fn keyword_skips_comments_and_parens() {
@@ -960,18 +1009,28 @@ mod tests {
     }
 
     #[test]
-    fn only_reads_are_retried() {
-        assert!(safe_to_retry("select * from t", 0));
-        assert!(safe_to_retry("  -- c\n(SELECT 1)", 0));
+    fn only_rerunnable_statements_are_retried() {
         assert!(safe_to_retry("table t", 0));
-        assert!(safe_to_retry("show search_path", 0));
+        assert!(safe_to_retry("  -- c\nSHOW search_path", 0));
         // Pages of a pageable statement are re-runs by design.
-        assert!(safe_to_retry("with a as (select 1) select * from a", 25));
-        assert!(!safe_to_retry("with a as (select 1) select * from a", 0));
-        assert!(!safe_to_retry("select * into t2 from t", 0));
+        assert!(safe_to_retry("select * from t", 25));
+        // A SELECT can call functions that write.
+        assert!(!safe_to_retry("select nextval('s')", 0));
+        assert!(!safe_to_retry("select * from t", 0));
+        // A batch may write after its first statement.
+        assert!(!safe_to_retry("table t; update t set n = n + 1", 0));
         assert!(!safe_to_retry("insert into t values (1)", 0));
-        assert!(!safe_to_retry("update t set a = 1", 0));
         assert!(!safe_to_retry("commit", 0));
+    }
+
+    #[test]
+    fn finds_commits_in_batches() {
+        assert!(commits("commit"));
+        assert!(commits("END"));
+        assert!(commits("insert into t values (1); commit"));
+        assert!(!commits("select case when a then 1 end from t"));
+        assert!(!commits("rollback"));
+        assert!(!commits("insert into t values (1)"));
     }
 
     /// The libpq variables' server (see `live_postgres`), or None to skip.
@@ -1055,7 +1114,8 @@ mod tests {
             vec![vec![Some("1".into())]]
         );
 
-        // No transaction: reads go on over a new session, unnoticed.
+        // No transaction: a dropped idle session is replaced before the
+        // next statement, unnoticed.
         kill_session(&pg, &config, password.as_deref()).await;
         assert_eq!(
             q("select 2").await.unwrap().rows,
@@ -1071,6 +1131,13 @@ mod tests {
             q("select 3").await.unwrap().rows,
             vec![vec![Some("3".into())]]
         );
+
+        // Manual mode survives the session being replaced after `ping`.
+        pg.set_tx_mode("test", &db, true).await.unwrap();
+        kill_session(&pg, &config, password.as_deref()).await;
+        pg.ping("test").await.unwrap();
+        assert_eq!(q("select 4").await.unwrap().tx, TxState::Active);
+        q("rollback").await.unwrap();
 
         pg.disconnect("test").await;
         assert_eq!(

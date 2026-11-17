@@ -206,9 +206,11 @@ A connected data source stays connected until you disconnect it:
 
 - **Dropped connections** (server restart, sleep, Wi-Fi or VPN change) are
   noticed within about a minute (TCP keepalives), and the session is reopened
-  on next use. A read (`SELECT`, `TABLE`, `SHOW`, other pages, the explorer)
-  that hits a dropped connection is re-run on a new one automatically; a
-  statement that writes is not, and its error says the connection was lost.
+  on next use. If the connection drops while a statement runs, only what is
+  safe to repeat is re-run on a new one automatically (other pages of a
+  result, `TABLE`, `SHOW`, the explorer); anything else (a `SELECT` can call
+  functions that write) fails saying the connection was lost. A drop during
+  `COMMIT` says the outcome is unknown: check the data before redoing it.
 - **Server away:** the data source shows as *reconnecting* (amber) and is
   retried with growing delays for about two minutes, then as *failed* with a
   Retry toast. Waking the machine or the network coming back retries at once.

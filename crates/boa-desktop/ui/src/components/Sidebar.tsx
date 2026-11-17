@@ -244,10 +244,54 @@ function SidebarFooter() {
   )
 }
 
-/** Server icon, in the connection's colour when it has one. */
-function ConnectionIcon({ conn }: { conn: Connection }) {
+/**
+ * Server icon in the connection's colour, with its state as a badge on the
+ * corner: green connected, pulsing amber connecting, red failed, none (and a
+ * dimmed icon) when offline. `cutout` is the surface colour behind it.
+ */
+export function ConnectionIcon({
+  conn,
+  cutout = 'ring-sidebar group-aria-selected:ring-sidebar-accent'
+}: {
+  conn: Connection
+  cutout?: string
+}) {
   const color = connectionColor(conn)
-  return <Server className={cn(ICON, 'text-quiet')} style={color ? { color } : undefined} />
+  const s = conn.state
+  const label =
+    s === 'connected'
+      ? `Connected · ${connMeta(conn)}`
+      : s === 'connecting'
+        ? 'Connecting…'
+        : s === 'failed'
+          ? 'Connection failed: expand to retry'
+          : 'Not connected'
+  return (
+    <span
+      role="img"
+      aria-label={label}
+      title={label}
+      data-conn-state={s}
+      className="relative inline-grid shrink-0 place-items-center"
+    >
+      <Server
+        className={cn(ICON, 'text-quiet', s === 'disconnected' && 'opacity-55')}
+        style={color ? { color } : undefined}
+      />
+      {s !== 'disconnected' && (
+        <span
+          aria-hidden
+          className={cn(
+            'absolute -right-[3px] -bottom-[3px] size-[7px] rounded-full ring-[1.5px]',
+            cutout,
+            s === 'connected' && 'bg-status-ok',
+            s === 'connecting' && 'animate-pulse bg-status-wait',
+            s === 'failed' && 'bg-status-err'
+          )}
+        />
+      )}
+    </span>
+  )
 }
 
 export function connMeta(c: Connection): string {
@@ -363,7 +407,6 @@ function useNodes(): Node[] {
         <span className="flex min-w-0 items-center gap-2">
           <span className="truncate">{conn.name}</span>
           <ConnectionTag conn={conn} />
-          <ConnStateDot conn={conn} />
         </span>
       ),
       meta: connected ? (
@@ -375,9 +418,9 @@ function useNodes(): Node[] {
           defaultItem={conn.database}
           onApply={(scope) => setScope(cid, scope)}
         />
-      ) : (
-        connMeta(conn)
-      ),
+      ) : conn.state === 'failed' ? (
+        <span className="text-status-err-text">failed</span>
+      ) : undefined,
       expandable: true,
       onExpand: () => {
         if (conn.state === 'disconnected' || conn.state === 'failed') connect(cid)

@@ -10,7 +10,9 @@ import type { Connection } from '@/state/types'
 /** Environment badge (`PROD`) in the connection colour, plus a lock when read-only. */
 export function ConnectionTag({ conn, className }: { conn: Connection; className?: string }) {
   const color = connectionColor(conn)
-  if (!conn.environment && !conn.readOnly && !color) return null
+  // No colour dot: the colour is already on the server icon, the editor
+  // stripe and the tab, and a dot beside the state badge read as a second one.
+  if (!conn.environment && !conn.readOnly) return null
   return (
     <span className={cn('flex shrink-0 items-center gap-1', className)}>
       {conn.environment ? (
@@ -21,12 +23,6 @@ export function ConnectionTag({ conn, className }: { conn: Connection; className
         >
           {ENV_BADGE[conn.environment]}
         </span>
-      ) : color ? (
-        <span
-          aria-hidden
-          className="inline-block size-2 shrink-0 rounded-full"
-          style={{ background: color }}
-        />
       ) : null}
       {conn.readOnly && (
         <span role="img" aria-label="read-only" title="Read-only connection">

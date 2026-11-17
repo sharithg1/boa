@@ -1,17 +1,19 @@
 // The last session, restored at startup: the selected database, each
 // database's tabs (consoles with their SQL, open tables with their filter
-// and sort) and its active tab, recent tables and which panels were open.
+// and sort) and its active tab, recent tables, which panels were open and
+// which connections were open (reconnected, retrying while unreachable).
 // Kept in localStorage and rewritten as it changes, so a crash or force
 // quit loses nothing either.
 // Results are not kept: statements are not re-run on launch.
 
 import {
   type Active,
-  connect,
   loadDatabase,
+  recover,
   reserveIds,
   type Tab,
   useStore,
+  watchConnections,
   type Workspace
 } from './store'
 
@@ -20,6 +22,8 @@ export type Session = {
   workspaces: Record<string, Workspace>
   mru: string[]
   seen: Record<string, number>
+  /** Connections open at quit (absent in sessions saved before this was kept). */
+  wanted?: Record<string, true>
   sidebarOpen?: boolean
   rightPanelOpen?: boolean
   bottomOpen?: boolean
@@ -104,11 +108,19 @@ export function parseSession(raw: string | null, connectionIds: Iterable<string>
     )
   )
   const flag = (v: unknown) => (typeof v === 'boolean' ? v : undefined)
+  const wanted = isObject(data.wanted)
+    ? Object.fromEntries(
+        Object.keys(data.wanted)
+          .filter((id) => known.has(id) && (data.wanted as Record<string, unknown>)[id] === true)
+          .map((id) => [id, true as const])
+      )
+    : undefined
   return {
     active,
     workspaces,
     mru,
     seen,
+    wanted,
     sidebarOpen: flag(data.sidebarOpen),
     rightPanelOpen: flag(data.rightPanelOpen),
     bottomOpen: flag(data.bottomOpen)
@@ -128,6 +140,7 @@ const pick = (s: SessionState): SessionState => ({
   workspaces: s.workspaces,
   mru: s.mru,
   seen: s.seen,
+  wanted: s.wanted,
   sidebarOpen: s.sidebarOpen,
   rightPanelOpen: s.rightPanelOpen,
   bottomOpen: s.bottomOpen
@@ -156,8 +169,19 @@ export function flushSession() {
 }
 
 /**
+ * The connections to reopen at launch: the selected one first, then the
+ * others that were open (sessions from before that was kept: just the
+ * selected one).
+ */
+export function connectionsToRestore(session: Session): string[] {
+  const first = session.active?.connectionId
+  const rest = Object.keys(session.wanted ?? {}).filter((id) => id !== first)
+  return first ? [first, ...rest] : rest
+}
+
+/**
  * Restores the last session (call once the connections are loaded),
- * reconnects the connection it was on, and from then on saves changes.
+ * reconnects the connections that were open, and from then on saves changes.
  */
 export function startSession() {
   if (started || typeof localStorage === 'undefined') return
@@ -172,19 +196,27 @@ export function startSession() {
   const session = parseSession(raw, Object.keys(useStore.getState().connections))
   if (session) {
     reserveIds(nextTabNumber(session))
-    const { sidebarOpen, rightPanelOpen, bottomOpen, ...rest } = session
+    const { sidebarOpen, rightPanelOpen, bottomOpen, wanted, ...rest } = session
     useStore.setState((s) => ({
       ...rest,
+      wanted: wanted ?? {},
       sidebarOpen: sidebarOpen ?? s.sidebarOpen,
       rightPanelOpen: rightPanelOpen ?? s.rightPanelOpen,
       bottomOpen: bottomOpen ?? s.bottomOpen
     }))
     const { active } = session
-    if (active)
-      void connect(active.connectionId).then((ok) => {
-        if (ok) void loadDatabase(active.connectionId, active.database)
-      })
+    // The selected connection may ask for a password; the others are
+    // reopened in the background (skipped if they would need one).
+    for (const id of connectionsToRestore(session)) {
+      const selected = id === active?.connectionId
+      const done = recover(id, { reason: 'restore', quiet: !selected })
+      if (selected && active)
+        void done.then((ok) => {
+          if (ok) void loadDatabase(active.connectionId, active.database)
+        })
+    }
   }
+  watchConnections()
 
   useStore.subscribe((s, prev) => {
     const a = pick(s)

@@ -76,8 +76,31 @@ impl From<tokio_postgres::Error> for CmdError {
         if message.contains("password missing") {
             return Self::code("password_required", "The server asked for a password");
         }
+        // The server could not be reached, or the connection dropped: worth
+        // retrying, unlike a refused login or a bad statement.
+        if is_network(&e) {
+            return Self::code(UNREACHABLE, message);
+        }
         Self::msg(message)
     }
+}
+
+/// Code of errors where the server could not be reached or the connection dropped.
+pub const UNREACHABLE: &str = "unreachable";
+
+/// A socket-level failure (refused, timed out, reset, closed), not one the server raised.
+fn is_network(e: &tokio_postgres::Error) -> bool {
+    if e.is_closed() {
+        return true;
+    }
+    let mut source = e.source();
+    while let Some(s) = source {
+        if s.is::<std::io::Error>() {
+            return true;
+        }
+        source = s.source();
+    }
+    false
 }
 
 impl From<native_tls::Error> for CmdError {

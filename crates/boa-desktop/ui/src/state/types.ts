@@ -5,7 +5,8 @@ import type { SshTunnel } from '@/lib/backend'
 
 export type Engine = 'postgres' | 'mysql' | 'sqlite'
 
-export type ConnState = 'connected' | 'connecting' | 'disconnected' | 'failed'
+/** `reconnecting`: was connected (or being restored at launch), retrying after the server went away. */
+export type ConnState = 'connected' | 'connecting' | 'reconnecting' | 'disconnected' | 'failed'
 
 export type Column = {
   name: string

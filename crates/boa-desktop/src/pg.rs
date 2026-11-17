@@ -39,6 +39,10 @@ struct Session {
     manual: AtomicBool,
     /// Opened with `default_transaction_read_only = on`.
     read_only: bool,
+    /// Replaces a session whose connection dropped with a transaction open,
+    /// and that hasn't been reported yet: the next statement (or `ping`)
+    /// says so instead of running as if nothing happened.
+    lost_tx: AtomicBool,
 }
 
 struct Open {
@@ -91,6 +95,13 @@ async fn open_session(
         .dbname(database)
         .application_name("boa")
         .connect_timeout(Duration::from_secs(10))
+        // Notice a dead connection (sleep, network change, VPN drop) within
+        // about a minute instead of the 2 h default, so it gets reopened.
+        // The user timeout (unacknowledged writes) only applies on Linux.
+        .keepalives_idle(Duration::from_secs(30))
+        .keepalives_interval(Duration::from_secs(10))
+        .keepalives_retries(3)
+        .tcp_user_timeout(Duration::from_secs(60))
         .ssl_mode(match config.ssl_mode {
             SslMode::Disable => tokio_postgres::config::SslMode::Disable,
             SslMode::Prefer => tokio_postgres::config::SslMode::Prefer,
@@ -117,7 +128,67 @@ async fn open_session(
         tx: TxCell::default(),
         manual: AtomicBool::new(false),
         read_only: config.read_only,
+        lost_tx: AtomicBool::new(false),
     })
+}
+
+/// How long `ping` waits for a session to answer.
+const PING_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// What `ping` found.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PingInfo {
+    /// Databases whose session dropped with a transaction open (rolled back).
+    pub lost_tx: Vec<String>,
+}
+
+fn tx_lost() -> CmdError {
+    CmdError {
+        tx: Some(TxState::Idle),
+        hint: Some("Uncommitted changes are gone. Run them again to redo them.".into()),
+        ..CmdError::code(
+            "tx_lost",
+            "The connection to the server was lost, so the open transaction was rolled back. \
+             The statement was not run.",
+        )
+    }
+}
+
+/// `e` happened because the session's connection dropped (`s` is closed):
+/// `tx_lost` if a transaction was open on it, else `connection_lost`.
+fn lost(s: &Session, e: CmdError, had_tx: bool) -> CmdError {
+    s.tx.set(TxState::Idle);
+    if had_tx {
+        return CmdError {
+            message: "The connection to the server was lost, so the open transaction was \
+                      rolled back"
+                .into(),
+            ..tx_lost()
+        };
+    }
+    CmdError {
+        tx: Some(TxState::Idle),
+        detail: Some(e.message),
+        ..CmdError::code("connection_lost", "The connection to the server was lost")
+    }
+}
+
+/// A statement that only reads, so it can be re-run after the connection
+/// dropped under it: other pages of a pageable one, and plain queries.
+fn safe_to_retry(sql: &str, offset: usize) -> bool {
+    if offset > 0 {
+        return true;
+    }
+    match leading_keyword(sql).as_str() {
+        "values" | "table" | "show" => true,
+        // Not `SELECT … INTO new_table`.
+        "select" => !sql
+            .to_ascii_lowercase()
+            .split(|c: char| !c.is_ascii_alphanumeric() && c != '_')
+            .any(|w| w == "into"),
+        _ => false,
+    }
 }
 
 #[derive(Debug, Serialize)]
@@ -380,12 +451,15 @@ impl Pg {
         // Held across the connect so two callers don't open the same session twice.
         let mut sessions = self.sessions.lock().await;
         let mut manual = false;
+        let mut lost_tx = false;
         if let Some(s) = sessions.get(&key) {
             if !s.client.is_closed() {
                 return Ok(s.clone());
             }
-            // Reopened after the connection dropped: same mode, no transaction.
+            // Reopened after the connection dropped: same mode, no
+            // transaction, and a note to report the one that was open.
             manual = s.manual.load(Ordering::Relaxed);
+            lost_tx = s.tx.get() != TxState::Idle || s.lost_tx.load(Ordering::Relaxed);
         }
         let open = self
             .open
@@ -398,19 +472,112 @@ impl Pg {
         let s =
             Arc::new(open_session(&open.config, open.password.as_deref(), database, via).await?);
         s.manual.store(manual, Ordering::Relaxed);
+        s.lost_tx.store(lost_tx, Ordering::Relaxed);
         sessions.insert(key, s.clone());
         Ok(s)
     }
 
+    /// Runs a read-only `f` on the database's session, once more on a
+    /// reopened one if the connection dropped under it.
+    async fn read<T, F, Fut>(&self, id: &str, database: &str, f: F) -> CmdResult<T>
+    where
+        F: Fn(Arc<Session>) -> Fut,
+        Fut: std::future::Future<Output = CmdResult<T>>,
+    {
+        let s = self.session(id, database).await?;
+        match f(s.clone()).await {
+            Err(_) if s.client.is_closed() => {
+                tracing::info!("session {id}/{database} dropped; retrying on a new one");
+                let s = self.session(id, database).await?;
+                f(s.clone()).await.map_err(|e| {
+                    if s.client.is_closed() {
+                        CmdError {
+                            detail: Some(e.message),
+                            ..CmdError::code(
+                                "connection_lost",
+                                "The connection to the server was lost",
+                            )
+                        }
+                    } else {
+                        e
+                    }
+                })
+            }
+            r => r,
+        }
+    }
+
+    /// Checks that the connection still works, without disturbing it: idle
+    /// sessions that don't answer are dropped (reopened on next use), then
+    /// the default database's session is reopened if needed and asked for a
+    /// round trip. Reports the transactions lost with dropped sessions.
+    pub async fn ping(&self, id: &str) -> CmdResult<PingInfo> {
+        let open = self
+            .open
+            .lock()
+            .await
+            .get(id)
+            .cloned()
+            .ok_or_else(|| CmdError::code("not_connected", "Not connected"))?;
+        // Busy sessions (a statement holds a reference) are left alone: a
+        // long query would make them look dead.
+        let idle: Vec<(String, Arc<Session>)> = self
+            .sessions
+            .lock()
+            .await
+            .iter()
+            .filter(|((cid, _), s)| cid == id && Arc::strong_count(s) == 1)
+            .map(|((_, db), s)| (db.clone(), s.clone()))
+            .collect();
+        let checks = idle.into_iter().map(|(db, s)| async move {
+            let alive = !s.client.is_closed() && answers(&s).await;
+            (db, s, alive)
+        });
+        let checked = futures_util::future::join_all(checks).await;
+        let mut lost_tx = Vec::new();
+        {
+            let mut sessions = self.sessions.lock().await;
+            for (db, s, alive) in checked {
+                let had_tx = s.lost_tx.swap(false, Ordering::Relaxed)
+                    || (!alive && s.tx.get() != TxState::Idle);
+                if had_tx {
+                    lost_tx.push(db.clone());
+                }
+                if !alive {
+                    s.tx.set(TxState::Idle);
+                    let key = (id.to_owned(), db);
+                    if sessions.get(&key).is_some_and(|cur| Arc::ptr_eq(cur, &s)) {
+                        sessions.remove(&key);
+                    }
+                }
+            }
+        }
+        let s = self.session(id, &open.config.database).await?;
+        if !answers(&s).await {
+            return Err(CmdError::code(
+                crate::error::UNREACHABLE,
+                "The server did not answer",
+            ));
+        }
+        if s.lost_tx.swap(false, Ordering::Relaxed) {
+            lost_tx.push(open.config.database.clone());
+        }
+        lost_tx.sort();
+        lost_tx.dedup();
+        Ok(PingInfo { lost_tx })
+    }
+
     /// Names of the database's schemas (cheap: for the schema picker).
     pub async fn list_schemas(&self, id: &str, database: &str) -> CmdResult<Vec<String>> {
-        let s = self.session(id, database).await?;
-        Ok(s.client
-            .query(SCHEMAS, &[])
-            .await?
-            .iter()
-            .map(|r| r.get(0))
-            .collect())
+        self.read(id, database, |s| async move {
+            Ok(s.client
+                .query(SCHEMAS, &[])
+                .await?
+                .iter()
+                .map(|r| r.get(0))
+                .collect())
+        })
+        .await
     }
 
     /// Tables, views, columns, indexes and constraints of the given schemas
@@ -421,7 +588,13 @@ impl Pg {
         database: &str,
         only: &[String],
     ) -> CmdResult<Vec<Schema>> {
-        let s = self.session(id, database).await?;
+        self.read(id, database, |s| async move {
+            Self::introspect_on(&s, only).await
+        })
+        .await
+    }
+
+    async fn introspect_on(s: &Session, only: &[String]) -> CmdResult<Vec<Schema>> {
         let mut schemas: Vec<Schema> = s
             .client
             .query(SCHEMAS, &[])
@@ -486,38 +659,61 @@ impl Pg {
         limit: usize,
         offset: usize,
     ) -> CmdResult<QueryResult> {
-        let s = self.session(id, database).await?;
         let text = sql.trim().trim_end_matches(';').trim_end();
-        if s.manual.load(Ordering::Relaxed)
-            && s.tx.get() == TxState::Idle
-            && offset == 0
-            && !text.is_empty()
-            && tx::opens_tx(&leading_keyword(text), text)
-        {
-            s.client.batch_execute("begin").await?;
-            s.tx.set(TxState::Active);
-        }
-        let run = self.execute(&s, sql, limit, offset).await;
-        let probe = tx::probe(&s.client).await;
-        s.tx.set(probe.state);
-        let reverted = if s.read_only && probe.writable {
-            Some(restore_read_only(&s).await)
-        } else {
-            None
-        };
-        match (run, reverted) {
-            (Ok(_), Some(e)) => Err(e),
-            (Ok(mut r), None) => {
-                r.tx = s.tx.get();
-                Ok(r)
+        let mut retried = false;
+        loop {
+            let s = self.session(id, database).await?;
+            // The session was reopened under an open transaction: don't run
+            // the next statement of it as if it were still there.
+            if s.lost_tx.swap(false, Ordering::Relaxed) {
+                return Err(tx_lost());
             }
-            (Err(mut e), _) => {
-                if s.read_only && e.code.as_deref() == Some("25006") {
-                    e.hint = Some("The connection is read-only (data source settings).".into());
+            let had_tx = s.tx.get() != TxState::Idle;
+            let run = async {
+                if s.manual.load(Ordering::Relaxed)
+                    && s.tx.get() == TxState::Idle
+                    && offset == 0
+                    && !text.is_empty()
+                    && tx::opens_tx(&leading_keyword(text), text)
+                {
+                    s.client.batch_execute("begin").await?;
+                    s.tx.set(TxState::Active);
                 }
-                e.tx = Some(s.tx.get());
-                Err(e)
+                self.execute(&s, sql, limit, offset).await
             }
+            .await;
+            if let Err(e) = &run {
+                if s.client.is_closed() {
+                    if !had_tx && !retried && safe_to_retry(text, offset) {
+                        tracing::info!("session {id}/{database} dropped; re-running the query");
+                        s.tx.set(TxState::Idle);
+                        retried = true;
+                        continue;
+                    }
+                    return Err(lost(&s, e.clone(), had_tx));
+                }
+            }
+            let probe = tx::probe(&s.client).await;
+            s.tx.set(probe.state);
+            let reverted = if s.read_only && probe.writable {
+                Some(restore_read_only(&s).await)
+            } else {
+                None
+            };
+            return match (run, reverted) {
+                (Ok(_), Some(e)) => Err(e),
+                (Ok(mut r), None) => {
+                    r.tx = s.tx.get();
+                    Ok(r)
+                }
+                (Err(mut e), _) => {
+                    if s.read_only && e.code.as_deref() == Some("25006") {
+                        e.hint = Some("The connection is read-only (data source settings).".into());
+                    }
+                    e.tx = Some(s.tx.get());
+                    Err(e)
+                }
+            };
         }
     }
 
@@ -626,10 +822,27 @@ impl Pg {
         statements: &[crate::edits::EditStatement],
     ) -> CmdResult<crate::edits::ApplyOutcome> {
         let s = self.session(id, database).await?;
+        if s.lost_tx.swap(false, Ordering::Relaxed) {
+            return Err(CmdError {
+                message: "The connection to the server was lost, so the open transaction was \
+                          rolled back. The edits were not submitted."
+                    .into(),
+                ..tx_lost()
+            });
+        }
+        let had_tx = s.tx.get() != TxState::Idle;
         let manual = s.manual.load(Ordering::Relaxed);
         crate::edits::apply(&s.client, &s.tx, manual, statements)
             .await
             .map_err(|mut e| {
+                if s.client.is_closed() {
+                    let mut e = lost(&s, e, had_tx);
+                    if !had_tx {
+                        e.hint =
+                            Some("Reload the table to see whether the edits were saved.".into());
+                    }
+                    return e;
+                }
                 e.tx = Some(s.tx.get());
                 e
             })
@@ -646,6 +859,16 @@ impl Pg {
             s.cancel.cancel_query(s.tls.clone()).await?;
         }
         Ok(())
+    }
+}
+
+/// The session answers a round trip within `PING_TIMEOUT` (an error the
+/// server raised, as in an aborted transaction, counts as an answer).
+async fn answers(s: &Session) -> bool {
+    match tokio::time::timeout(PING_TIMEOUT, s.client.simple_query("select 1")).await {
+        Ok(Ok(_)) => true,
+        Ok(Err(e)) => e.as_db_error().is_some(),
+        Err(_) => false,
     }
 }
 
@@ -722,7 +945,7 @@ async fn restore_read_only(s: &Session) -> CmdError {
 
 #[cfg(test)]
 mod tests {
-    use super::{CsvOptions, Pg, leading_keyword};
+    use super::{CsvOptions, Pg, leading_keyword, open_session, safe_to_retry};
     use crate::connections::{ConnConfig, SslMode};
 
     #[test]
@@ -734,6 +957,126 @@ mod tests {
         );
         assert_eq!(leading_keyword("insert into t values (1)"), "insert");
         assert_eq!(leading_keyword(""), "");
+    }
+
+    #[test]
+    fn only_reads_are_retried() {
+        assert!(safe_to_retry("select * from t", 0));
+        assert!(safe_to_retry("  -- c\n(SELECT 1)", 0));
+        assert!(safe_to_retry("table t", 0));
+        assert!(safe_to_retry("show search_path", 0));
+        // Pages of a pageable statement are re-runs by design.
+        assert!(safe_to_retry("with a as (select 1) select * from a", 25));
+        assert!(!safe_to_retry("with a as (select 1) select * from a", 0));
+        assert!(!safe_to_retry("select * into t2 from t", 0));
+        assert!(!safe_to_retry("insert into t values (1)", 0));
+        assert!(!safe_to_retry("update t set a = 1", 0));
+        assert!(!safe_to_retry("commit", 0));
+    }
+
+    /// The libpq variables' server (see `live_postgres`), or None to skip.
+    fn live_config() -> Option<(ConnConfig, Option<String>)> {
+        let host = std::env::var("PGHOST").ok()?;
+        let env = |k: &str, d: &str| std::env::var(k).unwrap_or_else(|_| d.to_owned());
+        Some((
+            ConnConfig {
+                id: "test".into(),
+                name: "test".into(),
+                host,
+                port: env("PGPORT", "5432").parse().unwrap(),
+                user: env("PGUSER", "postgres"),
+                database: env("PGDATABASE", "postgres"),
+                ssl_mode: SslMode::Prefer,
+                read_only: false,
+                environment: None,
+                color: None,
+                ssh: None,
+            },
+            std::env::var("PGPASSWORD").ok(),
+        ))
+    }
+
+    /// Ends the backend that `pg`'s session on the default database runs
+    /// in (as a server restart or a dropped network would), from another
+    /// connection, and waits for the client to notice.
+    async fn kill_session(pg: &Pg, config: &ConnConfig, password: Option<&str>) {
+        let db = &config.database;
+        let pid: String = pg
+            .query("test", db, "select pg_backend_pid()::text", 1, 0)
+            .await
+            .unwrap()
+            .rows[0][0]
+            .clone()
+            .unwrap();
+        let other = open_session(config, password, db, None).await.unwrap();
+        other
+            .client
+            .batch_execute(&format!("select pg_terminate_backend({pid})"))
+            .await
+            .unwrap();
+        let key = ("test".to_owned(), db.clone());
+        for _ in 0..100 {
+            if pg
+                .sessions
+                .lock()
+                .await
+                .get(&key)
+                .is_none_or(|s| s.client.is_closed())
+            {
+                return;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        panic!("the killed session never closed");
+    }
+
+    /// Dropped sessions against a real server (skipped without PGHOST): a
+    /// lost transaction is reported instead of being silently replaced,
+    /// and reads carry on over a new session.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn live_dropped_session() {
+        let Some((config, password)) = live_config() else {
+            eprintln!("PGHOST not set: skipping live Postgres test");
+            return;
+        };
+        let db = config.database.clone();
+        let pg = Pg::default();
+        pg.connect(config.clone(), password.clone()).await.unwrap();
+        let q = |sql: &'static str| pg.query("test", &db, sql, 10, 0);
+
+        // A transaction open when the connection drops: the next statement
+        // says it was rolled back and doesn't run; the one after works.
+        q("begin").await.unwrap();
+        kill_session(&pg, &config, password.as_deref()).await;
+        let err = q("select 1").await.unwrap_err();
+        assert_eq!(err.code.as_deref(), Some("tx_lost"));
+        assert_eq!(
+            q("select 1").await.unwrap().rows,
+            vec![vec![Some("1".into())]]
+        );
+
+        // No transaction: reads go on over a new session, unnoticed.
+        kill_session(&pg, &config, password.as_deref()).await;
+        assert_eq!(
+            q("select 2").await.unwrap().rows,
+            vec![vec![Some("2".into())]]
+        );
+
+        // `ping` reports a transaction lost while idle, once.
+        q("begin").await.unwrap();
+        kill_session(&pg, &config, password.as_deref()).await;
+        assert_eq!(pg.ping("test").await.unwrap().lost_tx, vec![db.clone()]);
+        assert!(pg.ping("test").await.unwrap().lost_tx.is_empty());
+        assert_eq!(
+            q("select 3").await.unwrap().rows,
+            vec![vec![Some("3".into())]]
+        );
+
+        pg.disconnect("test").await;
+        assert_eq!(
+            pg.ping("test").await.unwrap_err().code.as_deref(),
+            Some("not_connected")
+        );
     }
 
     /// Against a real server, configured with the libpq variables (PGHOST,

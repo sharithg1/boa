@@ -149,7 +149,11 @@ impl Pg {
             }),
             Err(e) => {
                 let _ = std::fs::remove_file(&tmp);
-                Err(e)
+                Err(if s.client.is_closed() {
+                    super::lost(&s, e, user_tx)
+                } else {
+                    e
+                })
             }
         }
     }

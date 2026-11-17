@@ -9,6 +9,9 @@ import { forgetHistory, recordHistory } from './history'
 import { setPrefs, usePrefs } from './prefs'
 import { confirmCloseTx, confirmRun } from './guards'
 import { readOnlyEscape } from '@/lib/guard'
+import { onLinkEvent } from './links'
+import { noteTx } from './tx'
+import type { BackendError } from '@/lib/backend'
 import type { Connection, HistoryEntry, ResultSet, Table } from './types'
 
 export type QueryTab = { id: string; kind: 'query'; title: string; sql: string }
@@ -42,6 +45,11 @@ export type Toast = {
 type State = {
   connections: Record<string, Connection>
   connectionOrder: string[]
+  /**
+   * Connections the user opened and hasn't disconnected: reconnected when
+   * they drop or the machine wakes up, and at the next launch.
+   */
+  wanted: Record<string, true>
   active: Active | null
   workspaces: Record<string, Workspace>
   /** Recently opened tables, newest first, as `tableKey`s. */
@@ -73,6 +81,7 @@ type State = {
 export const useStore = create<State>(() => ({
   connections: {},
   connectionOrder: [],
+  wanted: {},
   active: null,
   workspaces: {},
   mru: [],
@@ -198,9 +207,15 @@ function patchWorkspace(key: string, f: (ws: Workspace) => Workspace) {
   }))
 }
 
+/** Selects a database, connecting its connection if it isn't (as DataGrip does). */
 export function selectDatabase(connectionId: string, database: string) {
   useStore.setState({ active: { connectionId, database } })
-  void loadDatabase(connectionId, database)
+  const state = useStore.getState().connections[connectionId]?.state
+  if (state === 'disconnected' || state === 'failed')
+    void ensureConnected(connectionId).then((ok) => {
+      if (ok) void loadDatabase(connectionId, database)
+    })
+  else void loadDatabase(connectionId, database)
 }
 
 /** Opens a table in a tab (a preview tab unless `pin`), selecting its database. */
@@ -428,20 +443,25 @@ export async function saveConnection(
   if (
     prev?.state === 'connected' &&
     (await confirmCloseTx('reconnect', { [config.id]: config.name }, config.id))
-  )
-    await connect(config.id, savePassword ? undefined : (password ?? undefined))
+  ) {
+    stopRecovery(config.id)
+    await connectNow(config.id, savePassword ? undefined : (password ?? undefined))
+  }
 }
 
 export async function deleteConnection(id: string) {
   await backend.deleteConnection(id)
   forgetHistory(id)
+  stopRecovery(id)
   useStore.setState((s) => {
     const { [id]: _, ...connections } = s.connections
+    const { [id]: _w, ...wanted } = s.wanted
     const workspaces = Object.fromEntries(
       Object.entries(s.workspaces).filter(([k]) => !k.startsWith(`${id}\u0000`))
     )
     return {
       connections,
+      wanted,
       workspaces,
       connectionOrder: s.connectionOrder.filter((x) => x !== id),
       active: s.active?.connectionId === id ? null : s.active
@@ -449,65 +469,331 @@ export async function deleteConnection(id: string) {
   })
 }
 
+type ConnectResult = { ok: true } | { ok: false; error: BackendError }
+
+/** Connect attempts in flight: a second caller waits for the same one. */
+const connecting = new Map<string, Promise<ConnectResult>>()
+
 /**
  * Connects (with `password`, else the stored one), lists the databases and
  * loads the default one. A server asking for a password that isn't stored
- * opens the password prompt.
+ * opens the password prompt (not when `quiet`); other errors show a toast
+ * (not when `toast: false`).
+ */
+function connectNow(
+  id: string,
+  password?: string,
+  opts: { quiet?: boolean; toast?: boolean } = {}
+): Promise<ConnectResult> {
+  const pending = connecting.get(id)
+  if (pending) return pending
+  const conn = useStore.getState().connections[id]
+  if (!conn) return Promise.resolve({ ok: false, error: { message: 'Unknown connection' } })
+  const run = (async (): Promise<ConnectResult> => {
+    patchConnection(id, { state: 'connecting', latencyMs: null })
+    const started = performance.now()
+    try {
+      const info = await backend.connect(id, password)
+      const prev = new Map(conn.databases.map((d) => [d.name, d]))
+      patchConnection(id, {
+        state: 'connected',
+        latencyMs: Math.round(performance.now() - started),
+        serverVersion: info.serverVersion,
+        // Keep what was loaded before a reconnect; it refreshes on demand.
+        databases: info.databases.map((name) => ({
+          name,
+          schemas: prev.get(name)?.schemas ?? [],
+          loaded: false
+        }))
+      })
+      useStore.setState((s) => ({
+        wanted: { ...s.wanted, [id]: true },
+        passwordPrompt: s.passwordPrompt?.connectionId === id ? null : s.passwordPrompt
+      }))
+      // The first shown database, plus any shown ones left expanded.
+      const shown = shownDatabases(usePrefs.getState().scopes, useStore.getState().connections[id]!)
+      const expanded = usePrefs.getState().treeExpanded
+      shown.forEach((name, i) => {
+        if (i === 0 || expanded[schemaScopeKey(id, name)]) void loadDatabase(id, name)
+      })
+      return { ok: true }
+    } catch (e) {
+      const err = toBackendError(e)
+      const auth = isAuthError(err)
+      patchConnection(id, { state: auth ? 'disconnected' : 'failed' })
+      if (auth && opts.quiet) {
+        // Restoring at launch: don't ask for passwords of the connections in the background.
+      } else if (auth && (password != null || !conn.hasPassword || err.code === '28P01')) {
+        useStore.setState({
+          passwordPrompt: {
+            connectionId: id,
+            error: password != null || err.code === '28P01' ? err.message : undefined
+          }
+        })
+      } else if (opts.toast !== false) {
+        pushToast({ kind: 'error', title: `Could not connect to ${conn.name}`, body: err.message })
+      }
+      return { ok: false, error: err }
+    }
+  })()
+  connecting.set(id, run)
+  void run.finally(() => connecting.delete(id))
+  return run
+}
+
+const isAuthError = (e: BackendError) =>
+  e.code === 'password_required' || e.code === '28P01' || e.code === '28000'
+
+/** Worth trying again: the server couldn't be reached (not a refused login or a bad setting). */
+const isRetryable = (e: BackendError) => !e.code || e.code === 'unreachable'
+
+/**
+ * Connects (with `password`, else the stored one). While the connection is
+ * being re-established after a drop, retries that right away instead.
  */
 export async function connect(id: string, password?: string): Promise<boolean> {
-  const conn = useStore.getState().connections[id]
-  if (!conn || conn.state === 'connecting') return false
-  patchConnection(id, { state: 'connecting', latencyMs: null })
-  const started = performance.now()
-  try {
-    const info = await backend.connect(id, password)
-    const prev = new Map(conn.databases.map((d) => [d.name, d]))
-    patchConnection(id, {
-      state: 'connected',
-      latencyMs: Math.round(performance.now() - started),
-      serverVersion: info.serverVersion,
-      // Keep what was loaded before a reconnect; it refreshes on demand.
-      databases: info.databases.map((name) => ({
-        name,
-        schemas: prev.get(name)?.schemas ?? [],
-        loaded: false
-      }))
-    })
-    useStore.setState({ passwordPrompt: null })
-    // The first shown database, plus any shown ones left expanded.
-    const shown = shownDatabases(usePrefs.getState().scopes, useStore.getState().connections[id]!)
-    const expanded = usePrefs.getState().treeExpanded
-    shown.forEach((name, i) => {
-      if (i === 0 || expanded[schemaScopeKey(id, name)]) void loadDatabase(id, name)
-    })
-    return true
-  } catch (e) {
-    const err = toBackendError(e)
-    const auth = err.code === 'password_required' || err.code === '28P01'
-    patchConnection(id, { state: auth ? 'disconnected' : 'failed' })
-    if (auth && (password != null || !conn.hasPassword || err.code === '28P01')) {
-      useStore.setState({
-        passwordPrompt: {
-          connectionId: id,
-          error: password != null || err.code === '28P01' ? err.message : undefined
-        }
-      })
-    } else {
-      pushToast({ kind: 'error', title: `Could not connect to ${conn.name}`, body: err.message })
-    }
-    return false
-  }
+  if (password == null && recoveries.has(id)) return retryNow(id)
+  stopRecovery(id)
+  return (await connectNow(id, password)).ok
+}
+
+/**
+ * Makes sure the connection is open before acting on it: connects it, waits
+ * for a connect in progress, or retries a reconnect now. False if it stays closed.
+ */
+export async function ensureConnected(id: string): Promise<boolean> {
+  const c = useStore.getState().connections[id]
+  if (!c) return false
+  if (c.state === 'connected') return true
+  const pending = connecting.get(id)
+  if (pending) return (await pending).ok
+  return connect(id)
 }
 
 export async function disconnect(id: string) {
   const name = useStore.getState().connections[id]?.name ?? id
   if (!(await confirmCloseTx('disconnect', { [id]: name }, id))) return
+  stopRecovery(id)
+  unwant(id)
   patchConnection(id, { state: 'disconnected', latencyMs: null })
   try {
     await backend.disconnect(id)
   } catch (e) {
     reportError('Disconnect failed', e)
   }
+}
+
+function unwant(id: string) {
+  useStore.setState((s) => {
+    if (!s.wanted[id]) return {}
+    const { [id]: _, ...wanted } = s.wanted
+    return { wanted }
+  })
+}
+
+// ── Staying connected ─────────────────────────────────────────────────────
+// A wanted connection that drops is brought back: `recover` checks it with
+// `ping` (which keeps the sessions that still work, and their
+// transactions), or connects it again if the backend no longer has it (a
+// new launch), retrying with growing delays while the server can't be
+// reached. Meanwhile it shows as `reconnecting`; after the last attempt as
+// `failed`, with a Retry toast. Waking from sleep and the network coming
+// back check every wanted connection.
+
+/** Delays before each retry; once they run out the connection shows as failed. */
+export const RETRY_DELAYS_MS = [1_000, 2_000, 4_000, 8_000, 15_000, 30_000, 30_000, 30_000]
+
+/** Why a connection is being recovered: a call failed, the machine woke up, or the app launched. */
+type RecoverReason = 'lost' | 'wake' | 'restore'
+
+type Recovery = {
+  reason: RecoverReason
+  /** Don't ask for a password (connections restored in the background). */
+  quiet: boolean
+  tries: number
+  timer?: ReturnType<typeof setTimeout>
+  attempt?: Promise<boolean>
+  /** It showed as reconnecting (so getting back is worth a toast). */
+  flagged: boolean
+  done: Promise<boolean>
+  resolve: (ok: boolean) => void
+}
+
+const recoveries = new Map<string, Recovery>()
+
+/**
+ * Brings a wanted connection back (see above); resolves once it is
+ * connected (true) or given up on (false). Joins a recovery in progress.
+ */
+export function recover(
+  id: string,
+  { reason = 'lost', quiet = false }: { reason?: RecoverReason; quiet?: boolean } = {}
+): Promise<boolean> {
+  const running = recoveries.get(id)
+  if (running) return running.done
+  let resolve!: (ok: boolean) => void
+  const done = new Promise<boolean>((r) => {
+    resolve = r
+  })
+  recoveries.set(id, { reason, quiet, tries: 0, flagged: false, done, resolve })
+  void step(id)
+  return done
+}
+
+/** Runs the pending attempt of a recovery now; true if it got the connection back. */
+export async function retryNow(id: string): Promise<boolean> {
+  const r = recoveries.get(id)
+  if (!r) return useStore.getState().connections[id]?.state === 'connected'
+  return step(id)
+}
+
+/** Ends a recovery (the user connected, disconnected or deleted the connection). */
+function stopRecovery(id: string) {
+  const r = recoveries.get(id)
+  if (!r) return
+  clearTimeout(r.timer)
+  recoveries.delete(id)
+  r.resolve(useStore.getState().connections[id]?.state === 'connected')
+}
+
+async function step(id: string): Promise<boolean> {
+  const r = recoveries.get(id)
+  if (!r) return false
+  if (r.attempt) return r.attempt
+  clearTimeout(r.timer)
+  r.timer = undefined
+  r.attempt = attemptRecovery(id, r)
+  try {
+    return await r.attempt
+  } finally {
+    r.attempt = undefined
+  }
+}
+
+async function attemptRecovery(id: string, r: Recovery): Promise<boolean> {
+  const name = () => useStore.getState().connections[id]?.name ?? id
+  const started = performance.now()
+  let error: BackendError
+  try {
+    const info = await backend.ping(id)
+    if (recoveries.get(id) !== r) return false
+    noteLostTransactions(id, info.lostTx)
+    patchConnection(id, {
+      state: 'connected',
+      latencyMs: Math.round(performance.now() - started)
+    })
+    finish(id, r, true)
+    if (r.flagged && r.reason !== 'restore')
+      pushToast({ kind: 'success', title: `Reconnected to ${name()}` })
+    return true
+  } catch (e) {
+    error = toBackendError(e)
+  }
+  if (recoveries.get(id) !== r) return false
+  if (error.code === 'not_connected') {
+    // The backend doesn't have it open (a new launch, or it was never connected).
+    const res = await connectNow(id, undefined, { quiet: r.quiet, toast: false })
+    if (recoveries.get(id) !== r) return res.ok
+    if (res.ok) {
+      finish(id, r, true)
+      if (r.flagged && r.reason !== 'restore')
+        pushToast({ kind: 'success', title: `Reconnected to ${name()}` })
+      return true
+    }
+    error = res.error
+    if (!isRetryable(error)) {
+      // A refused login (the prompt is up, or skipped in the background) or a bad setting.
+      if (isAuthError(error)) {
+        if (r.quiet) unwant(id)
+      } else
+        pushToast({ kind: 'error', title: `Could not connect to ${name()}`, body: error.message })
+      finish(id, r, false)
+      return false
+    }
+  }
+  const delay = RETRY_DELAYS_MS[r.tries++]
+  if (delay === undefined) {
+    patchConnection(id, { state: 'failed', latencyMs: null })
+    finish(id, r, false)
+    pushToast(
+      {
+        kind: 'error',
+        title:
+          r.reason === 'restore'
+            ? `Could not connect to ${name()}`
+            : `Lost connection to ${name()}`,
+        body: error.message,
+        action: { label: 'Retry', run: () => void recover(id) }
+      },
+      0
+    )
+    return false
+  }
+  r.flagged = true
+  patchConnection(id, { state: 'reconnecting', latencyMs: null })
+  r.timer = setTimeout(() => void step(id), delay)
+  return false
+}
+
+function finish(id: string, r: Recovery, ok: boolean) {
+  clearTimeout(r.timer)
+  if (recoveries.get(id) === r) recoveries.delete(id)
+  r.resolve(ok)
+}
+
+/** Warns about transactions the server rolled back when their session dropped. */
+function noteLostTransactions(id: string, databases: string[]) {
+  const name = useStore.getState().connections[id]?.name ?? id
+  for (const database of databases) {
+    noteTx(id, database, { state: 'idle' })
+    pushToast(
+      {
+        kind: 'error',
+        title: 'Transaction rolled back',
+        body: `The connection to ${name} (${database}) was lost, so the server rolled back the open transaction. Uncommitted changes are gone.`
+      },
+      0
+    )
+  }
+}
+
+onLinkEvent((e) => {
+  if (e.kind === 'txLost') return noteLostTransactions(e.connectionId, [e.database])
+  if (useStore.getState().connections[e.connectionId]?.state === 'connected')
+    void recover(e.connectionId, { reason: 'lost' })
+})
+
+/**
+ * Checks every wanted connection (after sleep, or when the network comes
+ * back): open ones are pinged, ones being retried are retried now, failed
+ * ones get another round.
+ */
+export function checkConnections() {
+  const s = useStore.getState()
+  for (const id of Object.keys(s.wanted)) {
+    const state = s.connections[id]?.state
+    if (recoveries.has(id)) void retryNow(id)
+    else if (state === 'connected') void recover(id, { reason: 'wake' })
+    else if (state === 'failed' || state === 'reconnecting') void recover(id, { reason: 'lost' })
+  }
+}
+
+/** Timers stop while the machine sleeps: a tick this late means it woke up. */
+const WAKE_TICK_MS = 5_000
+const WAKE_GAP_MS = 20_000
+let watching = false
+
+/** Starts checking connections on wake and when the network comes back (once). */
+export function watchConnections() {
+  if (watching || typeof window === 'undefined') return
+  watching = true
+  window.addEventListener('online', checkConnections)
+  let last = Date.now()
+  setInterval(() => {
+    const now = Date.now()
+    if (now - last > WAKE_GAP_MS) checkConnections()
+    last = now
+  }, WAKE_TICK_MS)
 }
 
 function patchDatabase(
@@ -606,6 +892,9 @@ export async function runQuery(
 ) {
   const text = sql.trim()
   if (!text || useStore.getState().running[tabId]) return
+  // Not connected: connect first (or wait for the reconnect), then run.
+  if (useStore.getState().connections[connectionId]?.state !== 'connected')
+    await ensureConnected(connectionId)
   const conn = useStore.getState().connections[connectionId]
   const at = Date.now()
   const base = { sql: text, database, at, source: title }

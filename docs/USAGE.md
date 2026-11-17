@@ -136,7 +136,8 @@ statement the backend probes the server for the real state (idle, open,
 aborted: 25P02 until rolled back), shown in the console toolbar and the
 status bar; typed `begin` works in either mode. Disconnecting, reconnecting
 (after editing the data source) or quitting with a transaction open asks
-first, and rolls it back.
+first, and rolls it back. A transaction lost with a dropped connection is
+reported (see [Staying connected](#staying-connected)).
 
 Destructive statements (UPDATE / DELETE without WHERE, TRUNCATE, DROP,
 ALTER TABLE … DROP COLUMN; found with the editor's tokenizer, so comments,
@@ -194,3 +195,25 @@ Updates…** checks right away, and **Boa → About Boa** shows the version
 
 On launch Boa reopens the last session: the open tabs, each console's SQL,
 each table tab's filter and sort, the active tab and the panel layout.
+It reconnects every data source that was connected at quit (the selected
+one first; the others skip a password prompt), retrying for about half a
+minute while the server can't be reached (VPN not up yet, network still
+coming back).
+
+## Staying connected
+
+A connected data source stays connected until you disconnect it:
+
+- **Dropped connections** (server restart, sleep, Wi-Fi or VPN change) are
+  noticed within about a minute (TCP keepalives), and the session is reopened
+  on next use. A read (`SELECT`, `TABLE`, `SHOW`, other pages, the explorer)
+  that hits a dropped connection is re-run on a new one automatically; a
+  statement that writes is not, and its error says the connection was lost.
+- **Server away:** the data source shows as *reconnecting* (amber) and is
+  retried with growing delays for about two minutes, then as *failed* with a
+  Retry toast. Waking the machine or the network coming back retries at once.
+- **Lost transactions:** if a session drops with a transaction open, the
+  server rolls it back. Boa says so ("Transaction rolled back") and does not
+  run the next statement as if the transaction were still there.
+- **Acting on a closed data source** connects it first: running a statement,
+  selecting one of its databases, or the **Connect** button on its table tabs.

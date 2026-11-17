@@ -160,7 +160,11 @@ function ConnectionPopover({ connectionId }: { connectionId: string }) {
             disabled={conn.state === 'connecting'}
             onClick={() => connect(connectionId)}
           >
-            {conn.state === 'connecting' ? 'Connecting…' : 'Connect'}
+            {conn.state === 'connecting'
+              ? 'Connecting…'
+              : conn.state === 'reconnecting'
+                ? 'Reconnecting… Retry now'
+                : 'Connect'}
           </button>
         )}
       </PopoverContent>

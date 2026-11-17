@@ -18,6 +18,7 @@
     "allow-delete-connection",
     "allow-test-connection",
     "allow-connect",
+    "allow-ping",
     "allow-disconnect",
     "allow-list-schemas",
     "allow-introspect",

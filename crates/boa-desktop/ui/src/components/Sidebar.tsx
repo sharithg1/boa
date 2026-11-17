@@ -263,9 +263,11 @@ export function ConnectionIcon({
       ? `Connected · ${connMeta(conn)}`
       : s === 'connecting'
         ? 'Connecting…'
-        : s === 'failed'
-          ? 'Connection failed: expand to retry'
-          : 'Not connected'
+        : s === 'reconnecting'
+          ? 'Connection lost: reconnecting…'
+          : s === 'failed'
+            ? 'Connection failed: expand to retry'
+            : 'Not connected'
   return (
     <span
       role="img"
@@ -285,7 +287,7 @@ export function ConnectionIcon({
             'absolute -right-[3px] -bottom-[3px] size-[7px] rounded-full ring-[1.5px]',
             cutout,
             s === 'connected' && 'bg-status-ok',
-            s === 'connecting' && 'animate-pulse bg-status-wait',
+            (s === 'connecting' || s === 'reconnecting') && 'animate-pulse bg-status-wait',
             s === 'failed' && 'bg-status-err'
           )}
         />
@@ -304,6 +306,8 @@ export function connMeta(c: Connection): string {
           : 'connected'
     case 'connecting':
       return 'connecting'
+    case 'reconnecting':
+      return 'reconnecting'
     case 'failed':
       return 'failed'
     default:
@@ -323,7 +327,7 @@ export function ConnStateDot({ conn }: { conn: Connection }) {
       className={cn(
         'inline-block size-1.5 shrink-0 rounded-full',
         s === 'connected' && 'bg-status-ok',
-        s === 'connecting' && 'bg-status-wait',
+        (s === 'connecting' || s === 'reconnecting') && 'bg-status-wait',
         s === 'failed' && 'bg-status-err',
         s === 'disconnected' && 'border-[1.5px] border-dashed border-dim'
       )}
@@ -420,10 +424,12 @@ function useNodes(): Node[] {
         />
       ) : conn.state === 'failed' ? (
         <span className="text-status-err-text">failed</span>
+      ) : conn.state === 'reconnecting' ? (
+        <span className="text-status-wait">reconnecting…</span>
       ) : undefined,
       expandable: true,
       onExpand: () => {
-        if (conn.state === 'disconnected' || conn.state === 'failed') connect(cid)
+        if (conn.state !== 'connected' && conn.state !== 'connecting') connect(cid)
       },
       menu: (
         <>
@@ -459,7 +465,11 @@ function useNodes(): Node[] {
         icon: null,
         label: (
           <span className="text-dim">
-            {conn.state === 'connecting' ? 'Connecting…' : 'Not connected'}
+            {conn.state === 'connecting'
+              ? 'Connecting…'
+              : conn.state === 'reconnecting'
+                ? 'Reconnecting…'
+                : 'Not connected'}
           </span>
         ),
         expandable: false

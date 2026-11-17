@@ -4,8 +4,8 @@
 // tab's columns; Info shows the connection and database; History lists the
 // queries run on the connection (click to reopen in a new query tab).
 import { useState } from 'react'
-import { Columns3, Copy, History, Info, KeyRound, Table2 } from 'lucide-react'
-import { connectionString, dbKey, findTable, newQueryTab, pushToast, useStore } from '@/state/store'
+import { Columns3, History, Info, KeyRound, Table2 } from 'lucide-react'
+import { dbKey, findTable, newQueryTab, useStore } from '@/state/store'
 import {
   clampRightPanelWidth,
   DEFAULT_PREFS,
@@ -15,7 +15,6 @@ import {
 } from '@/state/prefs'
 import { cn } from '@/lib/utils'
 import { ago, bytes, ENGINE_LABEL } from '@/lib/format'
-import { IconButton } from './IconButton'
 import { PanelResizeHandle } from './PanelResizeHandle'
 import { StatusDot, connDot, DOT_LABEL } from './StatusDot'
 import { RightPanelToggle } from './TitleBar'
@@ -165,12 +164,7 @@ function InfoTab({ connectionId, database }: { connectionId: string; database: s
   const conn = useStore((s) => s.connections[connectionId])
   if (!conn) return null
   const db = conn.databases.find((d) => d.name === database)
-  const url = connectionString(conn, database)
   const dot = connDot(conn.state)
-  const copy = () => {
-    void navigator.clipboard?.writeText(url).catch(() => {})
-    pushToast({ kind: 'info', title: `Copied ${url}` }, 3200)
-  }
   const tables = db?.schemas.reduce((n, s) => n + s.tables.length, 0) ?? 0
   return (
     <div className="min-h-0 flex-1 overflow-y-auto">
@@ -181,12 +175,7 @@ function InfoTab({ connectionId, database }: { connectionId: string; database: s
           </span>
           <span className="min-w-0 truncate font-mono text-xs text-soft">{conn.name}</span>
         </div>
-        <div className="flex items-start gap-1.5">
-          <h2 className="min-w-0 text-lg leading-snug font-medium text-foreground">{database}</h2>
-          <IconButton label="Copy connection URL" side="bottom" className="mt-0.5" onClick={copy}>
-            <Copy className="size-3.5" />
-          </IconButton>
-        </div>
+        <h2 className="min-w-0 text-lg leading-snug font-medium text-foreground">{database}</h2>
         <div className="flex items-center gap-2 text-sm text-quiet">
           <StatusDot kind={dot} size={6} />
           {DOT_LABEL[dot]}
@@ -204,16 +193,6 @@ function InfoTab({ connectionId, database }: { connectionId: string; database: s
           </div>
         ))}
         {tables === 0 && <div className="px-3 py-2 text-sm text-quiet">No tables</div>}
-      </Section>
-      <Section title="Connection URL">
-        <button
-          type="button"
-          title="Copy URL"
-          onClick={copy}
-          className="mx-1.5 cursor-copy rounded-md px-1.5 py-1.5 text-left font-mono text-xs break-all text-soft hover:bg-hover"
-        >
-          {url}
-        </button>
       </Section>
     </div>
   )

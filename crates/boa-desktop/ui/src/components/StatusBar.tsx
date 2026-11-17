@@ -3,7 +3,7 @@
 // the console), and on the right the caret position / row estimate and the
 // active connection + latency (click for the connection popover).
 import { useState } from 'react'
-import { ArrowDownToLine, ChevronDown, ChevronRight, PanelBottom, Server } from 'lucide-react'
+import { ArrowDownToLine, ChevronDown, ChevronRight, PanelBottom } from 'lucide-react'
 import {
   connect,
   connectionString,
@@ -20,10 +20,9 @@ import { cn } from '@/lib/utils'
 import { IconButton } from './IconButton'
 import { ExportStatus } from './CsvExport'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
-import { ConnStateDot, connMeta } from './Sidebar'
+import { ConnectionIcon, connMeta } from './Sidebar'
 import { ConnectionTag } from './ConnectionTag'
 import { TxStatus } from './TxControls'
-import { connectionColor } from '@/lib/connTag'
 
 export function StatusBar() {
   const active = useStore((s) => s.active)
@@ -123,16 +122,14 @@ function UpdatePill() {
 
 function ConnectionPopover({ connectionId }: { connectionId: string }) {
   const conn = useStore((s) => s.connections[connectionId])!
-  const color = connectionColor(conn)
   const btn =
     'h-7 cursor-pointer rounded-md border border-input bg-card text-sm text-soft hover:bg-hover-strong hover:text-foreground disabled:cursor-default disabled:opacity-50'
   return (
     <Popover>
       <PopoverTrigger className="flex h-6 cursor-pointer items-center gap-1.5 rounded-md px-1.5 outline-none hover:bg-hover hover:text-foreground data-[state=open]:bg-hover">
-        <Server className="size-3.5 shrink-0" style={color ? { color } : undefined} />
+        <ConnectionIcon conn={conn} cutout="ring-background" />
         {conn.name}
         <ConnectionTag conn={conn} />
-        <ConnStateDot conn={conn} />
         <span className="text-xs text-dim">{connMeta(conn)}</span>
         <ChevronDown className="size-3 shrink-0" />
       </PopoverTrigger>

@@ -50,7 +50,7 @@ const node = (name) =>
     ? p.locator(`[role="treeitem"][data-node-id="${name}"]`)
     : p
         .locator('[role="treeitem"]', {
-          // A connection's label also holds its tag (PROD) and state dot: match its name span.
+          // A connection's label also holds its tag (PROD): match its name span.
           has: p.locator('span.min-w-0, span.min-w-0 span.truncate', {
             hasText: new RegExp(`^${esc(name)}$`)
           })
@@ -86,7 +86,7 @@ const commands = {
       els.map((e) => {
         const depth = Math.round((Number.parseFloat(e.style.paddingLeft) - 6) / 16)
         const mark = { true: '- ', false: '+ ' }[e.getAttribute('aria-expanded')] ?? '  '
-        const [label, meta] = [...e.querySelectorAll(':scope > span:not([aria-hidden])')].map(
+        const [label, meta] = [...e.querySelectorAll(':scope > span:not([aria-hidden]):not([role="img"])')].map(
           (s) => s.textContent
         )
         return `${'  '.repeat(depth)}${mark}${label}${meta ? `  (${meta})` : ''}  [${e.dataset.nodeId}]`

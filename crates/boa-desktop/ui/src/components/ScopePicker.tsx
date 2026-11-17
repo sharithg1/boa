@@ -75,7 +75,7 @@ export function ScopePicker({
         onClick={(e) => e.stopPropagation()}
         onDoubleClick={(e) => e.stopPropagation()}
         title={`Choose ${kind} to show`}
-        className="shrink-0 cursor-pointer rounded-[4px] border border-border px-1 text-xs leading-4 text-dim outline-none hover:border-border-strong hover:text-soft data-[state=open]:border-border-strong data-[state=open]:text-soft"
+        className="shrink-0 cursor-pointer rounded-[4px] border border-border-strong px-1 text-xs leading-4 text-dim outline-none hover:border-dim hover:text-soft data-[state=open]:border-dim data-[state=open]:text-soft"
       >
         {selected.length} of {items.length}
       </PopoverTrigger>

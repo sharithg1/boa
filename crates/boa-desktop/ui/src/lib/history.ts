@@ -46,23 +46,34 @@ export function historyCutoff(days: number, now = Date.now()): number | undefine
 /**
  * What makes two statements the same query: the SQL with its values
  * (strings, numbers, `$1` / `:name` parameters) replaced by `?`, comments
- * and spacing dropped, and unquoted text lower-cased. A list of values
- * (`in (1, 2, 3)`) counts as one, whatever its length.
+ * and spacing dropped, and unquoted text lower-cased. The values of an
+ * `in (1, 2, 3)` list count as one, whatever their number. Quoted
+ * identifiers are kept as written.
  */
 export function queryKey(sql: string): string {
+  const quoted: string[] = []
   let out = ''
   for (const t of tokenize(sql)) {
     if (t.kind === 'comment') out += ' '
     else if (t.kind === 'string' || t.kind === 'number' || t.kind === 'param') out += '?'
-    // Quoted identifiers keep their case.
-    else out += t.text.replace(/"[^"]*"|[^"]+/g, (m) => (m[0] === '"' ? m : m.toLowerCase()))
+    else
+      out += t.text.replace(/"[^"]*"|`[^`]*`|[^"`]+/g, (m) => {
+        if (m[0] !== '"' && m[0] !== '`') return m.toLowerCase()
+        // Set aside, so the clean-up below leaves the name alone.
+        quoted.push(m)
+        return `\u0001${quoted.length - 1}\u0001`
+      })
   }
-  return out
-    .replace(/\s+/g, ' ')
-    .replace(/ ?([=<>!,()+\-*/%|;]) ?/g, '$1')
-    .replace(/\?(,\?)+/g, '?')
-    .replace(/[; ]+$/, '')
-    .trim()
+  return (
+    out
+      .replace(/\s+/g, ' ')
+      .replace(/ ?([=<>!,()+\-*/%|;]) ?/g, '$1')
+      .replace(/\bin\(\?(,\?)+\)/g, 'in(?)')
+      .replace(/[; ]+$/, '')
+      .trim()
+      // biome-ignore lint/suspicious/noControlCharactersInRegex: the marker put in above
+      .replace(/\u0001(\d+)\u0001/g, (_, i: string) => quoted[Number(i)]!)
+  )
 }
 
 /** A record's key (computed for records saved before keys were). */

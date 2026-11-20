@@ -139,6 +139,22 @@ describe('queryKey', () => {
     differ('select * from "Users"', 'select * from "users"')
     differ('select * from t where a = 1', 'select * from t where a > 1')
   })
+  it('counts values as one only in an IN list', () => {
+    same('select * from t where id not in (1,2)', 'select * from t where id NOT IN (3, 4, 5)')
+    differ('select 1', 'select 1, 2')
+    differ('select round(1.25)', 'select round(1.25, 1)')
+    differ('insert into t values (1, 2)', 'insert into t values (1, 2, 3)')
+    differ('select join(1, 2)', 'select join(1)')
+  })
+  it('keeps quoted identifiers as written', () => {
+    differ('select * from "a  b"', 'select * from "a b"')
+    differ('select "a + b" from t', 'select "a+b" from t')
+    differ('select * from `Users`', 'select * from `users`')
+    same('SELECT * FROM "My Table"  WHERE id = 1', 'select * from "My Table" where id=2')
+    expect(queryKey('SELECT "A  b", c FROM "T 1" WHERE x = 5')).toBe(
+      'select "A  b",c from "T 1" where x=?'
+    )
+  })
 })
 
 describe('dedupeQueries', () => {

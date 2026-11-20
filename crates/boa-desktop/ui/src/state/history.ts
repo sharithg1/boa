@@ -13,6 +13,7 @@ import {
   HISTORY_CAP,
   historyCutoff,
   mergeLoaded,
+  recordKey,
   toRecord,
   type HistoryRecord
 } from '@/lib/history'
@@ -61,6 +62,13 @@ export function recordHistory(connectionId: string, entry: HistoryEntry) {
   if (!on) return
   const rec = toRecord(entry)
   const s = useQueryHistory.getState()
+  // Earlier runs of this query saved without a key (before runs were
+  // deduplicated): the backend cannot tell they are the same query, so
+  // remove them here, or they would come back once this run is deleted.
+  const legacy = (s.lists[connectionId] ?? [])
+    .filter((r) => r.key === undefined && recordKey(r) === rec.key)
+    .map((r) => r.id)
+  if (legacy.length) backend.historyDelete(connectionId, legacy).catch(() => {})
   if (s.lists[connectionId]) {
     useQueryHistory.setState((st) => ({
       lists: {

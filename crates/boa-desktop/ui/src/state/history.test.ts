@@ -82,6 +82,22 @@ describe('query history state', () => {
     expect(disk.get('c1')!.map((r) => r.at - T0)).toEqual([2, 3])
   })
 
+  it('replaces an earlier run saved without a key, on disk too', async () => {
+    disk.set('c1', [
+      { id: 'old', sql: 'select * from users where id = 1', database: 'app', at: T0 - DAY, ms: 1 },
+      { id: 'other', sql: 'select * from orders', database: 'app', at: T0 - DAY + 1, ms: 1 }
+    ])
+    await loadHistory('c1')
+    recordHistory('c1', entry('select * from users where id = 2', 5))
+    expect(ids('c1')).toEqual(['select * from users where id = 2', 'select * from orders'])
+    await vi.waitFor(() =>
+      expect(disk.get('c1')!.map((r) => r.sql)).toEqual([
+        'select * from orders',
+        'select * from users where id = 2'
+      ])
+    )
+  })
+
   it('keeps the last 30 days by default, or the period set', async () => {
     recordHistory('c1', entry('select a', -40 * DAY))
     recordHistory('c1', entry('select b', -20 * DAY))

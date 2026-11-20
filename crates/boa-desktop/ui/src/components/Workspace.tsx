@@ -19,6 +19,7 @@ import {
 import {
   cancelQuery,
   connect,
+  dismissFailure,
   dbKey,
   describeError,
   findTable,
@@ -305,17 +306,7 @@ function QueryView({
           tabId={tab.id}
           title={tab.title}
         />
-        {running ? (
-          <RunStatus since={runningSince} className="ml-2" />
-        ) : (
-          failed && (
-            <RunFailed
-              {...failed}
-              className="mx-2"
-              onClick={() => useStore.setState({ bottomOpen: true, bottomView: 'output' })}
-            />
-          )
-        )}
+        {running && <RunStatus since={runningSince} className="ml-2" />}
         <span className="flex-1" />
         <DropdownMenu>
           <DropdownMenuTrigger className={cn(TOOL_BTN, 'font-mono')} title="Default schema">
@@ -499,6 +490,7 @@ function QueryView({
           )}
         </div>
       </div>
+      {failed && !running && <RunFailed {...failed} onDismiss={() => dismissFailure(tab.id)} />}
     </div>
   )
 }

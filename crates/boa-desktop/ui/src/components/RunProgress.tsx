@@ -1,10 +1,11 @@
 // Feedback while a statement is in flight: a thin indeterminate bar that
 // sweeps along the Database Output header (where the result lands), and a
-// spinner with the elapsed time for the console toolbar.
+// spinner with the elapsed time for the console toolbar; and, when it fails,
+// the error in a strip under the editor.
 // Both fade in after a beat (main.css), so statements that return at once
 // don't flash them.
 import { useEffect, useState } from 'react'
-import { CircleAlert } from 'lucide-react'
+import { CircleAlert, X } from 'lucide-react'
 import { elapsed } from '@/lib/format'
 import { cn } from '@/lib/utils'
 import { Spinner } from '@/components/ui/spinner'
@@ -36,30 +37,37 @@ export function RunStatus({ since, className }: { since: number; className?: str
   )
 }
 
-/** The tab's last statement failed: its error, in the toolbar. Click for the Output log. */
+/**
+ * The tab's last statement failed: its error (and the server's detail / hint)
+ * in a strip under the editor, right above the Database Output panel.
+ */
 export function RunFailed({
   error,
   detail,
-  onClick,
-  className
+  onDismiss
 }: {
   error: string
   detail?: string
-  onClick: () => void
-  className?: string
+  onDismiss: () => void
 }) {
   return (
-    <button
-      type="button"
-      title={`${error}${detail ? `\n${detail}` : ''}\n\nClick to show the Output log`}
-      onClick={onClick}
-      className={cn(
-        'flex h-6 min-w-0 cursor-pointer items-center gap-1.5 rounded-md bg-status-err/10 px-1.5 text-xs text-status-err-text hover:bg-status-err/20',
-        className
-      )}
+    <div
+      role="alert"
+      className="flex max-h-32 shrink-0 items-start gap-2 overflow-y-auto border-t border-status-err/40 bg-status-err/10 py-1.5 pr-1.5 pl-3 font-mono text-sm leading-5 select-text"
     >
-      <CircleAlert className="size-3.5 shrink-0" />
-      <span className="truncate">{error}</span>
-    </button>
+      <CircleAlert className="mt-0.5 size-4 shrink-0 text-status-err" />
+      <div className="min-w-0 flex-1 break-words whitespace-pre-wrap">
+        <div className="text-status-err-text">{error}</div>
+        {detail && <div className="text-status-err-text/80">{detail}</div>}
+      </div>
+      <button
+        type="button"
+        aria-label="Dismiss error"
+        onClick={onDismiss}
+        className="grid size-5 shrink-0 cursor-pointer place-items-center rounded-[4px] text-status-err-text/70 hover:bg-status-err/20 hover:text-status-err-text"
+      >
+        <X className="size-3.5" />
+      </button>
+    </div>
   )
 }

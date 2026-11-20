@@ -901,11 +901,7 @@ export async function runQuery(
       bottomOpen: true,
       bottomView: 'output'
     }))
-  useStore.setState((s) => {
-    if (!s.failed[tabId]) return {}
-    const { [tabId]: _, ...rest } = s.failed
-    return { failed: rest }
-  })
+  dismissFailure(tabId)
   // Not connected: connect first (or wait for the reconnect), then run.
   if (useStore.getState().connections[connectionId]?.state !== 'connected')
     await ensureConnected(connectionId)
@@ -984,6 +980,15 @@ export async function runQuery(
       return { running }
     })
   }
+}
+
+/** Drops a tab's failure banner (it also goes with the tab's next run). */
+export function dismissFailure(tabId: string) {
+  useStore.setState((s) => {
+    if (!s.failed[tabId]) return {}
+    const { [tabId]: _, ...failed } = s.failed
+    return { failed }
+  })
 }
 
 /** Adds a run that didn't go through `runQuery` (grid edits) to the Output log. */

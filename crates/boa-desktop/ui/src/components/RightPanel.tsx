@@ -2,9 +2,10 @@
 // pane: its own header row of icon pills with the panel toggle at the far
 // right, then hairline-ruled sections. Structure lists the active table
 // tab's columns; Info shows the connection and database; History lists the
-// queries run on the connection (click to reopen in a new query tab).
-import { useState } from 'react'
-import { Columns3, History, Info, KeyRound, Table2 } from 'lucide-react'
+// connection's saved query history (state/history.ts: one entry per query,
+// newest first), searchable, click to reopen in a new query tab.
+import { useDeferredValue, useEffect, useMemo, useState } from 'react'
+import { CircleAlert, Columns3, History, Info, KeyRound, Search, Table2, X } from 'lucide-react'
 import { dbKey, findTable, newQueryTab, useStore } from '@/state/store'
 import {
   clampRightPanelWidth,
@@ -13,8 +14,11 @@ import {
   usePrefs,
   type RightTab
 } from '@/state/prefs'
+import { loadHistory, useQueryHistory } from '@/state/history'
 import { cn } from '@/lib/utils'
 import { ago, bytes, ENGINE_LABEL } from '@/lib/format'
+import { duration, filterHistory, outcomeLabel, sqlPreview } from '@/lib/history'
+import { SqlText } from './SqlHighlight'
 import { PanelResizeHandle } from './PanelResizeHandle'
 import { StatusDot, connDot, DOT_LABEL } from './StatusDot'
 import { RightPanelToggle } from './TitleBar'
@@ -199,29 +203,93 @@ function InfoTab({ connectionId, database }: { connectionId: string; database: s
 }
 
 function HistoryTab({ connectionId }: { connectionId: string }) {
-  const history = useStore((s) => s.history[connectionId])
-  if (!history?.length) {
-    return <Empty icon={History}>Queries you run on this connection show up here.</Empty>
+  const list = useQueryHistory((s) => s.lists[connectionId])
+  const loading = useQueryHistory((s) => !!s.loading[connectionId])
+  const recording = usePrefs((s) => s.recordHistory)
+  const [q, setQ] = useState('')
+  const query = useDeferredValue(q)
+  useEffect(() => {
+    void loadHistory(connectionId)
+  }, [connectionId])
+  const shown = useMemo(() => filterHistory(list ?? [], { query }), [list, query])
+
+  if (!list?.length) {
+    return (
+      <Empty icon={History}>
+        {loading
+          ? 'Loading history…'
+          : recording
+            ? 'Queries you run on this connection show up here.'
+            : 'Query history is turned off in Settings → Queries.'}
+      </Empty>
+    )
   }
   return (
-    <div className="min-h-0 flex-1 overflow-y-auto">
-      <Section title="Recent" count={history.length}>
-        {history.map((h) => (
+    <div className="flex min-h-0 flex-1 flex-col">
+      <div className="flex h-9 shrink-0 items-center gap-2 border-b border-border px-3">
+        <Search className="size-3.5 shrink-0 text-faint" />
+        <input
+          value={q}
+          spellCheck={false}
+          onChange={(e) => setQ(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === 'Escape' && q) {
+              e.preventDefault()
+              e.stopPropagation()
+              setQ('')
+            }
+          }}
+          placeholder="Search history"
+          aria-label="Search history"
+          className="min-w-0 flex-1 border-none bg-transparent text-sm text-foreground outline-none placeholder:text-faint"
+        />
+        {q && (
           <button
-            key={h.id}
             type="button"
-            title={`${h.sql}\n\nClick to open in a new query tab`}
-            onClick={() => newQueryTab(connectionId, h.database, h.sql)}
-            className="flex cursor-pointer flex-col gap-0.5 px-3 py-1.5 text-left hover:bg-hover"
+            aria-label="Clear search"
+            onClick={() => setQ('')}
+            className="grid size-5 shrink-0 cursor-pointer place-items-center rounded text-faint hover:bg-hover hover:text-foreground"
           >
-            <span className="line-clamp-2 font-mono text-xs break-all text-soft">{h.sql}</span>
-            <span className="text-xs text-dim">
-              {h.database} · {ago(h.at)} · {h.ms} ms
-              {h.rows != null ? ` · ${h.rows} rows` : ''}
-            </span>
+            <X className="size-3.5" />
           </button>
-        ))}
-      </Section>
+        )}
+      </div>
+      <div className="min-h-0 flex-1 overflow-y-auto">
+        <Section title={query ? 'Matches' : 'Recent'} count={shown.length}>
+          {shown.length === 0 && (
+            <div className="px-3 py-2 text-sm text-quiet">No queries match “{query}”.</div>
+          )}
+          {shown.map((h) => {
+            const pv = sqlPreview(h.sql, 3)
+            return (
+              <button
+                key={h.id}
+                type="button"
+                title={`${h.sql}\n\nClick to open in a new query tab`}
+                onClick={() => newQueryTab(connectionId, h.database, h.sql)}
+                className="flex cursor-pointer flex-col gap-0.5 px-3 py-1.5 text-left hover:bg-hover"
+              >
+                <pre className="m-0 max-h-[72px] overflow-hidden font-mono text-xs leading-[18px] break-all whitespace-pre-wrap text-body">
+                  <SqlText sql={pv.text} />
+                  {pv.more && <span className="text-faint"> …</span>}
+                </pre>
+                <span className="flex min-w-0 items-center gap-1 truncate text-xs text-dim">
+                  {h.error && (
+                    <CircleAlert
+                      className="size-3 shrink-0 text-status-err-text"
+                      aria-label="Failed"
+                    />
+                  )}
+                  <span className="truncate">
+                    {h.database} · {ago(h.at)} · {duration(h.ms)} ·{' '}
+                    <span className={cn(h.error && 'text-status-err-text')}>{outcomeLabel(h)}</span>
+                  </span>
+                </span>
+              </button>
+            )
+          })}
+        </Section>
+      </div>
     </div>
   )
 }

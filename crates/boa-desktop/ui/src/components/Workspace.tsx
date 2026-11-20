@@ -59,7 +59,7 @@ import { CompletionPopup, caretBox, charWidth } from './CompletionPopup'
 import { StatementChooser } from './StatementChooser'
 import { complete, type CompletionResult } from '@/lib/complete'
 import { TxControls } from './TxControls'
-import { RunBar, RunStatus } from './RunProgress'
+import { RunStatus } from './RunProgress'
 import { ConnectionStripe } from './ConnectionTag'
 import { TableFilterBar } from './TableFilterBar'
 
@@ -115,11 +115,10 @@ export function Workspace() {
 }
 
 /** Toolbar row above an editor or grid. */
-function Toolbar({ busy, children }: { busy?: boolean; children: ReactNode }) {
+function Toolbar({ children }: { children: ReactNode }) {
   return (
-    <div className="relative flex h-9 shrink-0 items-center gap-0.5 border-b border-border px-2">
+    <div className="flex h-9 shrink-0 items-center gap-0.5 border-b border-border px-2">
       {children}
-      {busy && <RunBar />}
     </div>
   )
 }
@@ -276,7 +275,7 @@ function QueryView({
 
   return (
     <div className="flex h-full flex-col">
-      <Toolbar busy={running}>
+      <Toolbar>
         <IconButton
           label="Execute (⌘↵)"
           side="bottom"

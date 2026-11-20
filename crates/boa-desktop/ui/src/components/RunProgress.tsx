@@ -1,5 +1,6 @@
 // Feedback while a statement is in flight: a thin indeterminate bar that
-// sweeps along the edge of a toolbar, and a spinner with the elapsed time.
+// sweeps along the Database Output header (where the result lands), and a
+// spinner with the elapsed time for the console toolbar.
 // Both fade in after a beat (main.css), so statements that return at once
 // don't flash them.
 import { useEffect, useState } from 'react'

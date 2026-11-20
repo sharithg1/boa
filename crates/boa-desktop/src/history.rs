@@ -1,21 +1,21 @@
-//! Query history: every statement run from the client, one JSON object per
-//! line in `<app config dir>/history-<connection id>.jsonl` (owner-only on
-//! Unix, like `connections.json`). Appends are cheap; once a file holds
-//! `CAP + SLACK` entries it is rewritten with the newest `CAP`. Lines that do
-//! not parse (a crash mid-write) are skipped.
+//! Query history: the queries run from the client, one JSON object per line
+//! in `<app config dir>/history-<connection id>.jsonl` (owner-only on Unix,
+//! like `connections.json`). An append replaces the earlier run of the same
+//! query (same `key`: the UI's `queryKey`, the SQL without its values) and
+//! drops runs past the retention period (a setting: 30 days by default) and
+//! the oldest past `CAP`, rewriting the file. Lines that do not parse (a
+//! crash mid-write) are skipped.
 
 use crate::error::CmdResult;
 use serde::{Deserialize, Serialize};
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::fs::{File, OpenOptions};
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
-/// Entries kept per connection (the oldest are dropped).
+/// Distinct queries kept per connection (the oldest are dropped).
 pub const CAP: usize = 5000;
-/// How far past `CAP` a file may grow before it is compacted.
-const SLACK: usize = 500;
 
 /// One executed statement, as the UI records it (`ui/src/lib/history.ts`).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -23,6 +23,10 @@ const SLACK: usize = 500;
 pub struct Entry {
     pub id: String,
     pub sql: String,
+    /// What makes two runs the same query (`queryKey` in the UI). Entries
+    /// saved before keys were have none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub key: Option<String>,
     pub database: String,
     /// When it ran (ms since the epoch).
     pub at: f64,
@@ -46,11 +50,17 @@ pub struct Entry {
     pub detail: Option<String>,
 }
 
-/// Serialises writes and remembers each file's line count, so an append
-/// does not have to read the file.
+impl Entry {
+    /// The dedupe key: the UI's, or the SQL itself for an entry without one.
+    fn key(&self) -> &str {
+        self.key.as_deref().unwrap_or_else(|| self.sql.trim())
+    }
+}
+
+/// Serialises reads and writes of the history files.
 #[derive(Default)]
 pub struct History {
-    counts: Mutex<HashMap<String, usize>>,
+    lock: Mutex<()>,
 }
 
 /// File name for a connection id: safe characters kept, others hex-escaped,
@@ -119,49 +129,45 @@ fn write_all(path: &Path, entries: &[Entry]) -> CmdResult<()> {
 }
 
 impl History {
-    fn counts(&self) -> std::sync::MutexGuard<'_, HashMap<String, usize>> {
-        self.counts
+    fn lock(&self) -> std::sync::MutexGuard<'_, ()> {
+        self.lock
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
-    /// The connection's entries, oldest first.
-    pub fn list(&self, dir: &Path, id: &str) -> CmdResult<Vec<Entry>> {
-        let mut counts = self.counts();
-        let entries = read(&file(dir, id))?;
-        counts.insert(id.to_owned(), entries.len());
+    /// The connection's entries run at or after `cutoff` (ms since the
+    /// epoch; `None`: all), oldest first. Older ones stay in the file until
+    /// the next append.
+    pub fn list(&self, dir: &Path, id: &str, cutoff: Option<f64>) -> CmdResult<Vec<Entry>> {
+        let _guard = self.lock();
+        let mut entries = read(&file(dir, id))?;
+        if let Some(cutoff) = cutoff {
+            entries.retain(|e| e.at >= cutoff);
+        }
         Ok(entries)
     }
 
-    pub fn append(&self, dir: &Path, id: &str, entry: &Entry) -> CmdResult<()> {
-        let mut counts = self.counts();
+    /// Adds `entry` as the newest, in place of any earlier run of the same
+    /// query; drops runs before `cutoff` and keeps the newest `CAP`.
+    pub fn append(
+        &self,
+        dir: &Path,
+        id: &str,
+        entry: &Entry,
+        cutoff: Option<f64>,
+    ) -> CmdResult<()> {
+        let _guard = self.lock();
         std::fs::create_dir_all(dir)?;
         let path = file(dir, id);
-        let count = match counts.get(id) {
-            Some(n) => *n,
-            None => read(&path)?.len(),
-        };
-        let mut line = serde_json::to_vec(entry)?;
-        line.push(b'\n');
-        open_options()
-            .append(true)
-            .create(true)
-            .open(&path)?
-            .write_all(&line)?;
-        let mut count = count + 1;
-        if count > CAP + SLACK {
-            let entries = read(&path)?;
-            let keep = &entries[entries.len().saturating_sub(CAP)..];
-            write_all(&path, keep)?;
-            count = keep.len();
-        }
-        counts.insert(id.to_owned(), count);
-        Ok(())
+        let mut entries = read(&path)?;
+        entries.retain(|e| e.key() != entry.key() && cutoff.is_none_or(|c| e.at >= c));
+        entries.push(entry.clone());
+        write_all(&path, &entries[entries.len().saturating_sub(CAP)..])
     }
 
     /// Removes the entries with these ids.
     pub fn delete(&self, dir: &Path, id: &str, ids: &[String]) -> CmdResult<()> {
-        let mut counts = self.counts();
+        let _guard = self.lock();
         let path = file(dir, id);
         let drop: HashSet<&str> = ids.iter().map(String::as_str).collect();
         let mut entries = read(&path)?;
@@ -170,14 +176,12 @@ impl History {
         if entries.len() != before {
             write_all(&path, &entries)?;
         }
-        counts.insert(id.to_owned(), entries.len());
         Ok(())
     }
 
     /// Deletes the connection's history file.
     pub fn clear(&self, dir: &Path, id: &str) -> CmdResult<()> {
-        let mut counts = self.counts();
-        counts.remove(id);
+        let _guard = self.lock();
         match std::fs::remove_file(file(dir, id)) {
             Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(e.into()),
             _ => Ok(()),
@@ -187,7 +191,7 @@ impl History {
 
 #[cfg(test)]
 mod tests {
-    use super::{CAP, Entry, History, SLACK, file};
+    use super::{CAP, Entry, History, file};
     use std::path::PathBuf;
 
     fn temp_dir(name: &str) -> PathBuf {
@@ -207,6 +211,7 @@ mod tests {
         Entry {
             id: format!("e{n}"),
             sql: format!("select {n}"),
+            key: Some(format!("select ? from t{n}")),
             database: "postgres".into(),
             at: 1_700_000_000_000.0 + n as f64,
             ms: 3.0,
@@ -233,24 +238,24 @@ mod tests {
     fn append_list_delete_clear() {
         let dir = temp_dir("basic");
         let h = History::default();
-        assert!(h.list(&dir, "c1").unwrap().is_empty());
+        assert!(h.list(&dir, "c1", None).unwrap().is_empty());
         for n in 0..3 {
-            h.append(&dir, "c1", &entry(n)).unwrap();
+            h.append(&dir, "c1", &entry(n), None).unwrap();
         }
         let mut failed = entry(9);
         failed.error = Some("[42P01] relation \"x\" does not exist".into());
         failed.rows = None;
-        h.append(&dir, "c1", &failed).unwrap();
-        h.append(&dir, "c2", &entry(5)).unwrap();
+        h.append(&dir, "c1", &failed, None).unwrap();
+        h.append(&dir, "c2", &entry(5), None).unwrap();
 
-        let list = h.list(&dir, "c1").unwrap();
+        let list = h.list(&dir, "c1", None).unwrap();
         assert_eq!(list.len(), 4);
         assert_eq!(list[0], entry(0));
         assert_eq!(list[3], failed);
 
         h.delete(&dir, "c1", &["e1".into()]).unwrap();
         let ids: Vec<_> = h
-            .list(&dir, "c1")
+            .list(&dir, "c1", None)
             .unwrap()
             .into_iter()
             .map(|e| e.id)
@@ -259,8 +264,8 @@ mod tests {
 
         h.clear(&dir, "c1").unwrap();
         h.clear(&dir, "c1").unwrap(); // already gone: fine
-        assert!(h.list(&dir, "c1").unwrap().is_empty());
-        assert_eq!(h.list(&dir, "c2").unwrap().len(), 1);
+        assert!(h.list(&dir, "c1", None).unwrap().is_empty());
+        assert_eq!(h.list(&dir, "c2", None).unwrap().len(), 1);
 
         #[cfg(unix)]
         {
@@ -278,16 +283,16 @@ mod tests {
     fn skips_broken_lines() {
         let dir = temp_dir("broken");
         let h = History::default();
-        h.append(&dir, "c", &entry(1)).unwrap();
+        h.append(&dir, "c", &entry(1), None).unwrap();
         let path = file(&dir, "c");
         let mut text = std::fs::read_to_string(&path).unwrap();
         text.push_str("{\"id\":\"half\",\"sq\n");
         std::fs::write(&path, text).unwrap();
         // A fresh instance, as after a restart.
         let h = History::default();
-        h.append(&dir, "c", &entry(2)).unwrap();
+        h.append(&dir, "c", &entry(2), None).unwrap();
         let ids: Vec<_> = h
-            .list(&dir, "c")
+            .list(&dir, "c", None)
             .unwrap()
             .into_iter()
             .map(|e| e.id)
@@ -300,14 +305,75 @@ mod tests {
     fn caps_to_newest() {
         let dir = temp_dir("cap");
         let h = History::default();
-        let total = CAP + SLACK + 1;
-        for n in 0..total {
-            h.append(&dir, "c", &entry(n)).unwrap();
-        }
-        let list = h.list(&dir, "c").unwrap();
+        let total = CAP + 3;
+        // Written directly: an append rewrites the file.
+        let lines: String = (0..total - 1)
+            .map(|n| serde_json::to_string(&entry(n)).unwrap() + "\n")
+            .collect();
+        std::fs::write(file(&dir, "c"), lines).unwrap();
+        h.append(&dir, "c", &entry(total - 1), None).unwrap();
+        let list = h.list(&dir, "c", None).unwrap();
         assert_eq!(list.len(), CAP);
         assert_eq!(list[0].id, format!("e{}", total - CAP));
         assert_eq!(list[CAP - 1].id, format!("e{}", total - 1));
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn rerun_replaces_the_earlier_entry() {
+        let dir = temp_dir("dedupe");
+        let h = History::default();
+        for n in 0..3 {
+            h.append(&dir, "c", &entry(n), None).unwrap();
+        }
+        // The same query with another value: same key, new SQL.
+        let mut again = entry(0);
+        again.id = "e0b".into();
+        again.sql = "select 42".into();
+        h.append(&dir, "c", &again, None).unwrap();
+        let list = h.list(&dir, "c", None).unwrap();
+        let ids: Vec<_> = list.iter().map(|e| e.id.as_str()).collect();
+        assert_eq!(ids, ["e1", "e2", "e0b"]);
+        assert_eq!(list[2].sql, "select 42");
+
+        // Entries without a key are the same query when their SQL is.
+        let mut old = entry(7);
+        old.key = None;
+        h.append(&dir, "c", &old, None).unwrap();
+        let mut old_again = old.clone();
+        old_again.id = "e7b".into();
+        h.append(&dir, "c", &old_again, None).unwrap();
+        let ids: Vec<_> = h
+            .list(&dir, "c", None)
+            .unwrap()
+            .into_iter()
+            .map(|e| e.id)
+            .collect();
+        assert_eq!(ids, ["e1", "e2", "e0b", "e7b"]);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn drops_runs_past_the_retention_period() {
+        let dir = temp_dir("age");
+        let h = History::default();
+        for n in 0..4 {
+            h.append(&dir, "c", &entry(n), None).unwrap();
+        }
+        let at = |n: usize| Some(entry(n).at);
+        let ids = |cutoff| -> Vec<String> {
+            h.list(&dir, "c", cutoff)
+                .unwrap()
+                .into_iter()
+                .map(|e| e.id)
+                .collect()
+        };
+        // Listing hides older runs without removing them.
+        assert_eq!(ids(at(2)), ["e2", "e3"]);
+        assert_eq!(ids(None), ["e0", "e1", "e2", "e3"]);
+        // An append removes them.
+        h.append(&dir, "c", &entry(4), at(2)).unwrap();
+        assert_eq!(ids(None), ["e2", "e3", "e4"]);
         std::fs::remove_dir_all(dir).unwrap();
     }
 }

@@ -20,6 +20,8 @@ export type Prefs = {
   confirmDestructive: boolean
   /** Save every statement run to the connection's query history (on disk). */
   recordHistory: boolean
+  /** Days a run stays in the query history; 0 keeps it until deleted. */
+  historyDays: number
   /** Approximate row counts next to tables in the sidebar. */
   sidebarRowCounts: boolean
   /** Show views alongside tables in the sidebar. */
@@ -62,6 +64,7 @@ export const DEFAULT_PREFS: Prefs = {
   rowLimit: 500,
   confirmDestructive: true,
   recordHistory: true,
+  historyDays: 30,
   sidebarRowCounts: true,
   sidebarViews: true,
   recentCount: 5,
@@ -84,6 +87,8 @@ function load(): Prefs {
     if (!raw) return DEFAULT_PREFS
     const prefs = { ...DEFAULT_PREFS, ...(JSON.parse(raw) as Partial<Prefs>) }
     if (!RIGHT_TABS.includes(prefs.rightTab)) prefs.rightTab = DEFAULT_PREFS.rightTab
+    if (!Number.isFinite(prefs.historyDays) || prefs.historyDays < 0)
+      prefs.historyDays = DEFAULT_PREFS.historyDays
     return prefs
   } catch {
     return DEFAULT_PREFS

@@ -151,11 +151,15 @@ editor, the console toolbar and the status bar.
 
 ## Query history
 
-⌘⌥E, the console toolbar's history button, or "Query History" in ⌘K. Every
-statement run from a console is saved per connection in the app config dir
-(`history-<connection id>.jsonl`, JSON lines, owner-only; the newest 5,000
-kept; deleted with the connection), failed ones with their error. Paging
-through a result does not add entries.
+⌘⌥E, the console toolbar's history button, or "Query History" in ⌘K.
+Queries run from a console are saved per connection in the app config dir
+(`history-<connection id>.jsonl`, JSON lines, owner-only; deleted with the
+connection), failed ones with their error, and kept for 30 days (Settings →
+Queries: 7 days to forever; at most 5,000 per connection). A query run
+again replaces its earlier entry, also when only its values differ (string
+and number literals, `$1` / `:name` parameters, the length of an `IN` list),
+so the entry shows the latest values. Paging through a result does not add
+entries.
 
 Search matches words in the SQL as you type, with an errors-only filter and
 a toggle for all connections; ⏎ inserts the statement at the console's

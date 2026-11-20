@@ -10,7 +10,7 @@ import { sampleConnections } from '@/state/mock'
 import { type ExportBackend, mockExport, tauriExport } from './exportBackend'
 import type { EditStatement } from './gridEdits'
 import { applyMockEdits } from '@/state/mockEdits'
-import { localHistoryStore, type HistoryRecord } from './history'
+import { historyCutoff, localHistoryStore, type HistoryRecord } from './history'
 import type { Environment, ResultColumn, Schema } from '@/state/types'
 import { trackLinks } from '@/state/links'
 import { trackTx, type TxState } from '@/state/tx'
@@ -143,9 +143,10 @@ export type Backend = {
   cancelQuery(id: string, database: string): Promise<void>
   /** Manual (a transaction opens before the first statement) or Auto commit; resolves to the state. */
   setTxMode(id: string, database: string, manual: boolean): Promise<TxState>
-  /** The connection's saved query history, oldest first. */
-  historyList(id: string): Promise<HistoryRecord[]>
-  historyAppend(id: string, entry: HistoryRecord): Promise<void>
+  /** The connection's saved query history of the last `days` (0: all), oldest first. */
+  historyList(id: string, days: number): Promise<HistoryRecord[]>
+  /** Saves a run in place of the query's earlier one; drops runs older than `days` (0: none). */
+  historyAppend(id: string, entry: HistoryRecord, days: number): Promise<void>
   historyDelete(id: string, ids: string[]): Promise<void>
   historyClear(id: string): Promise<void>
   /**
@@ -173,8 +174,8 @@ const tauriBackend: Backend = {
   cancelQuery: (id, database) => invoke('cancel_query', { id, database }),
   ...tauriExport,
   applyEdits: (id, database, statements) => invoke('apply_edits', { id, database, statements }),
-  historyList: (id) => invoke('history_list', { id }),
-  historyAppend: (id, entry) => invoke('history_append', { id, entry }),
+  historyList: (id, days) => invoke('history_list', { id, days }),
+  historyAppend: (id, entry, days) => invoke('history_append', { id, entry, days }),
   historyDelete: (id, ids) => invoke('history_delete', { id, ids }),
   historyClear: (id) => invoke('history_clear', { id }),
   setTxMode: (id, database, manual) => invoke('set_tx_mode', { id, database, manual })
@@ -395,8 +396,8 @@ function mockBackend(): Backend {
       const out = applyMockEdits(dbOf(id, database), statements)
       return { ...out, inTransaction: s.tx === 'active', tx: s.tx }
     },
-    historyList: async (id) => history.list(id),
-    historyAppend: async (id, entry) => history.append(id, entry),
+    historyList: async (id, days) => history.list(id, historyCutoff(days)),
+    historyAppend: async (id, entry, days) => history.append(id, entry, historyCutoff(days)),
     historyDelete: async (id, ids) => history.remove(id, ids),
     historyClear: async (id) => history.clear(id),
     setTxMode: async (id, database, manual) => {

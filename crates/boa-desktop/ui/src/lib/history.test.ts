@@ -1,12 +1,15 @@
 import { describe, expect, it } from 'vitest'
 import {
+  dedupeQueries,
   duration,
   filterHistory,
+  historyCutoff,
   insertionText,
   localHistoryStore,
   mergeLoaded,
   mergeNewestFirst,
   outcomeLabel,
+  queryKey,
   sqlPreview,
   toRecord,
   type HistoryRecord
@@ -40,6 +43,7 @@ describe('toRecord', () => {
     ).toEqual({
       id: 'r1',
       sql: 'select 1',
+      key: 'select ?',
       database: 'app',
       at: 10,
       ms: 2,
@@ -63,6 +67,7 @@ describe('toRecord', () => {
     ).toEqual({
       id: 'r2',
       sql: 'select x',
+      key: 'select x',
       database: 'app',
       at: 11,
       ms: 3,
@@ -113,6 +118,49 @@ describe('filterHistory', () => {
   })
 })
 
+describe('queryKey', () => {
+  const same = (a: string, b: string) => expect(queryKey(a)).toBe(queryKey(b))
+  const differ = (a: string, b: string) => expect(queryKey(a)).not.toBe(queryKey(b))
+  it('ignores values', () => {
+    same('select * from users where id = 1', 'select * from users where id = 42')
+    same("select * from t where name = 'ann'", "select * from t where name = 'bob''s'")
+    same('select * from t where a = $1 and b = :b', "select * from t where a = 7 and b = 'x'")
+    same('select * from t where id in (1, 2, 3)', 'select * from t where id in (9)')
+    same('select * from t limit 10 offset 20', 'select * from t limit 50 offset 0')
+  })
+  it('ignores case, spacing, comments and a trailing semicolon', () => {
+    same('SELECT *\n  FROM Users -- all\n WHERE id=1;', 'select * from users where id = 2')
+    same('/* x */ select 1', 'select 2 ;')
+  })
+  it('tells different queries apart', () => {
+    differ('select * from users where id = 1', 'select * from orders where id = 1')
+    differ('select a from t', 'select b from t')
+    differ('select * from t1', 'select * from t2')
+    differ('select * from "Users"', 'select * from "users"')
+    differ('select * from t where a = 1', 'select * from t where a > 1')
+  })
+})
+
+describe('dedupeQueries', () => {
+  it('keeps the newest run of each query, capped', () => {
+    const items = [
+      rec('4', 'select * from t where id = 4', 4),
+      rec('3', 'select * from u', 3),
+      rec('2', 'select * from t where id = 2', 2, {
+        key: queryKey('select * from t where id = 2')
+      }),
+      rec('1', 'select * from v', 1)
+    ]
+    expect(dedupeQueries(items).map((r) => r.id)).toEqual(['4', '3', '1'])
+    expect(dedupeQueries(items, 2).map((r) => r.id)).toEqual(['4', '3'])
+    expect(dedupeQueries(items, 10, 3).map((r) => r.id)).toEqual(['4', '3'])
+  })
+  it('has a cutoff only for a retention period', () => {
+    expect(historyCutoff(30, 100 * 86_400_000)).toBe(70 * 86_400_000)
+    expect(historyCutoff(0, 5)).toBeUndefined()
+  })
+})
+
 describe('merging', () => {
   it('merges connections newest first', () => {
     const a = [rec('a2', 'x', 20), rec('a1', 'x', 5)]
@@ -120,8 +168,8 @@ describe('merging', () => {
     expect(mergeNewestFirst([a, b]).map((r) => r.id)).toEqual(['a2', 'b1', 'a1'])
   })
   it('adds records made during a load without duplicates, capped', () => {
-    const loaded = [rec('2', 'x', 2), rec('1', 'x', 1)]
-    const pending = [rec('3', 'x', 3), rec('2', 'x', 2)]
+    const loaded = [rec('2', 'b', 2), rec('1', 'a', 1)]
+    const pending = [rec('3', 'c', 3), rec('2', 'b', 2)]
     expect(mergeLoaded(loaded, pending).map((r) => r.id)).toEqual(['3', '2', '1'])
     expect(mergeLoaded(loaded, pending, 2).map((r) => r.id)).toEqual(['3', '2'])
   })
@@ -164,11 +212,21 @@ describe('localHistoryStore', () => {
   }
   it('appends oldest first, caps, deletes and clears per connection', () => {
     const h = localHistoryStore(memory(), 3)
-    for (const i of [1, 2, 3, 4]) h.append('c1', rec(String(i), 'x', i))
+    for (const i of [1, 2, 3, 4]) h.append('c1', rec(String(i), `select ${i} from t${i}`, i))
     h.append('c2', rec('z', 'x', 9))
     expect(h.list('c1').map((r) => r.id)).toEqual(['2', '3', '4'])
+    // The same query again, with another value: replaces its earlier entry.
+    h.append('c1', rec('3b', 'select 30 from t3', 5))
+    expect(h.list('c1').map((r) => r.id)).toEqual(['2', '4', '3b'])
+    h.remove('c1', ['3b'])
+    h.append('c1', rec('3', 'select 3 from t3', 6))
+    expect(h.list('c1').map((r) => r.id)).toEqual(['2', '4', '3'])
+    // Runs before the cutoff are hidden by a list and dropped by an append.
+    expect(h.list('c1', 5).map((r) => r.id)).toEqual(['3'])
+    h.append('c1', rec('5', 'select 5 from t5', 7), 5)
+    expect(h.list('c1').map((r) => r.id)).toEqual(['3', '5'])
     h.remove('c1', ['3'])
-    expect(h.list('c1').map((r) => r.id)).toEqual(['2', '4'])
+    expect(h.list('c1').map((r) => r.id)).toEqual(['5'])
     h.clear('c1')
     expect(h.list('c1')).toEqual([])
     expect(h.list('c2').map((r) => r.id)).toEqual(['z'])

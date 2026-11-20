@@ -4,7 +4,8 @@ import type { HistoryRecord } from '@/lib/history'
 const disk = new Map<string, HistoryRecord[]>()
 vi.mock('@/lib/backend', () => ({
   backend: {
-    historyList: async (id: string) => [...(disk.get(id) ?? [])],
+    historyList: async (id: string, days: number) =>
+      (disk.get(id) ?? []).filter((r) => !days || r.at >= Date.now() - days * 86_400_000),
     historyAppend: async (id: string, r: HistoryRecord) => {
       disk.set(id, [...(disk.get(id) ?? []), r])
     },
@@ -37,24 +38,60 @@ const { clearHistory, deleteHistoryEntries, loadHistory, recordHistory, useQuery
 const { setPrefs } = await import('./prefs')
 const { pageResult, runQuery, useStore } = await import('./store')
 
-const entry = (sql: string, at: number) => ({ id: at, sql, database: 'app', at, ms: 1, rows: 1 })
+/** `at`: ms after the start of the test run (recent, so inside the retention period). */
+const T0 = Date.now()
+const DAY = 86_400_000
+const entry = (sql: string, at: number) => ({
+  id: at,
+  sql,
+  database: 'app',
+  at: T0 + at,
+  ms: 1,
+  rows: 1
+})
 const ids = (id: string) => useQueryHistory.getState().lists[id]?.map((r) => r.sql)
 
 describe('query history state', () => {
   beforeEach(() => {
     disk.clear()
     useQueryHistory.setState({ lists: {}, loading: {} })
-    setPrefs({ recordHistory: true })
+    setPrefs({ recordHistory: true, historyDays: 30 })
   })
 
   it('saves runs, loads newest first and follows new runs', async () => {
-    recordHistory('c1', entry('select 1', 1))
-    recordHistory('c1', entry('select 2', 2))
+    recordHistory('c1', entry('select a', 1))
+    recordHistory('c1', entry('select b', 2))
     await loadHistory('c1')
-    expect(ids('c1')).toEqual(['select 2', 'select 1'])
-    recordHistory('c1', entry('select 3', 3))
-    expect(ids('c1')).toEqual(['select 3', 'select 2', 'select 1'])
+    expect(ids('c1')).toEqual(['select b', 'select a'])
+    recordHistory('c1', entry('select c', 3))
+    expect(ids('c1')).toEqual(['select c', 'select b', 'select a'])
     expect(disk.get('c1')).toHaveLength(3)
+  })
+
+  it('keeps one entry per query, with the latest values', async () => {
+    recordHistory('c1', entry('select * from users where id = 1', 1))
+    recordHistory('c1', entry('select * from orders', 2))
+    await loadHistory('c1')
+    recordHistory('c1', entry('SELECT * FROM users\n  WHERE id = 2', 3))
+    expect(ids('c1')).toEqual(['SELECT * FROM users\n  WHERE id = 2', 'select * from orders'])
+    // A fresh read (the mocked disk keeps every append) dedupes the same way.
+    await loadHistory('c1', { force: true })
+    expect(ids('c1')).toEqual(['SELECT * FROM users\n  WHERE id = 2', 'select * from orders'])
+    // The earlier run is removed from disk too.
+    await Promise.resolve()
+    expect(disk.get('c1')!.map((r) => r.at - T0)).toEqual([2, 3])
+  })
+
+  it('keeps the last 30 days by default, or the period set', async () => {
+    recordHistory('c1', entry('select a', -40 * DAY))
+    recordHistory('c1', entry('select b', -20 * DAY))
+    recordHistory('c1', entry('select c', -2 * DAY))
+    await loadHistory('c1')
+    expect(ids('c1')).toEqual(['select c', 'select b'])
+    setPrefs({ historyDays: 7 })
+    await vi.waitFor(() => expect(ids('c1')).toEqual(['select c']))
+    setPrefs({ historyDays: 0 })
+    await vi.waitFor(() => expect(ids('c1')).toEqual(['select c', 'select b', 'select a']))
   })
 
   it('keeps runs made while loading', async () => {

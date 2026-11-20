@@ -83,7 +83,20 @@ const SECTIONS: { title: string; rows: Row[] }[] = [
         id: 'recordHistory',
         kind: 'switch',
         label: 'Save query history',
-        desc: 'Keep every statement you run, per connection, for Query History (⌘⌥E).'
+        desc: 'Keep the queries you run, per connection, for Query History (⌘⌥E). A query run again, even with other values, replaces its earlier entry.'
+      },
+      {
+        id: 'historyDays',
+        kind: 'select',
+        label: 'Keep query history for',
+        desc: 'Older runs are hidden, and removed the next time a statement is saved.',
+        options: [
+          ['7', '7 days'],
+          ['30', '30 days'],
+          ['90', '90 days'],
+          ['365', '1 year'],
+          ['0', 'Forever']
+        ]
       }
     ]
   }

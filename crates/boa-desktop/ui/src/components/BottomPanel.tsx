@@ -4,7 +4,7 @@
 // the result grid or the log. Resizable from its top edge (double-click
 // resets); toggled with ⌥J or the status bar button.
 import { useState } from 'react'
-import { Minus, SquareTerminal, Table2, Trash2, X } from 'lucide-react'
+import { CircleAlert, Minus, SquareTerminal, Table2, Trash2, X } from 'lucide-react'
 import { closeResult, dbKey, pageResult, useStore } from '@/state/store'
 import { clampBottomHeight, DEFAULT_PREFS, setPrefs, usePrefs } from '@/state/prefs'
 import type { HistoryEntry } from '@/state/types'
@@ -37,6 +37,9 @@ export function BottomPanel() {
   const paging = current ? current.tabId in running : false
   // A statement of this database is in flight: its outcome lands here.
   const busy = (tabs ?? []).some((t) => t.id in running)
+  // The connection's latest statement failed: say so on the Output tab, which
+  // may not be the one showing.
+  const lastFailed = useStore((s) => !!(s.active && s.history[s.active.connectionId]?.[0]?.error))
 
   return (
     <section
@@ -62,9 +65,18 @@ export function BottomPanel() {
           <PanelTab
             selected={view === 'output' || !current}
             onClick={() => useStore.setState({ bottomView: 'output' })}
-            icon={<SquareTerminal className="size-3.5 shrink-0" />}
+            icon={
+              lastFailed ? (
+                <CircleAlert
+                  aria-label="Last statement failed"
+                  className="size-3.5 shrink-0 text-status-err"
+                />
+              ) : (
+                <SquareTerminal className="size-3.5 shrink-0" />
+              )
+            }
           >
-            Output
+            <span className={cn(lastFailed && 'text-status-err-text')}>Output</span>
           </PanelTab>
           {resultTabs.map((t) => {
             const r = results[t.id]!

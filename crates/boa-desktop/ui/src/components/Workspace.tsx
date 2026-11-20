@@ -59,7 +59,7 @@ import { CompletionPopup, caretBox, charWidth } from './CompletionPopup'
 import { StatementChooser } from './StatementChooser'
 import { complete, type CompletionResult } from '@/lib/complete'
 import { TxControls } from './TxControls'
-import { RunStatus } from './RunProgress'
+import { RunFailed, RunStatus } from './RunProgress'
 import { ConnectionStripe } from './ConnectionTag'
 import { TableFilterBar } from './TableFilterBar'
 
@@ -147,6 +147,7 @@ function QueryView({
   const connecting = useStore((s) => s.connections[connectionId]?.state === 'connecting')
   const runningSince = useStore((s) => s.running[tab.id])
   const running = runningSince != null
+  const failed = useStore((s) => s.failed[tab.id])
   const db = useStore((s) =>
     s.connections[connectionId]?.databases.find((d) => d.name === database)
   )
@@ -304,7 +305,17 @@ function QueryView({
           tabId={tab.id}
           title={tab.title}
         />
-        {running && <RunStatus since={runningSince} className="ml-2" />}
+        {running ? (
+          <RunStatus since={runningSince} className="ml-2" />
+        ) : (
+          failed && (
+            <RunFailed
+              {...failed}
+              className="mx-2"
+              onClick={() => useStore.setState({ bottomOpen: true, bottomView: 'output' })}
+            />
+          )
+        )}
         <span className="flex-1" />
         <DropdownMenu>
           <DropdownMenuTrigger className={cn(TOOL_BTN, 'font-mono')} title="Default schema">

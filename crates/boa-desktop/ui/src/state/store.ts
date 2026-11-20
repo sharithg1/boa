@@ -65,8 +65,10 @@ type State = {
   bottomView: 'output' | string
   /** Latest result of each editor tab, by tab id. */
   results: Record<string, ResultSet>
-  /** Tabs with a statement in flight, by tab id. */
-  running: Record<string, true>
+  /** Tabs with a statement in flight, by tab id: when it started (ms epoch). */
+  running: Record<string, number>
+  /** Tabs whose last statement failed, by tab id, until their next run. */
+  failed: Record<string, { error: string; detail?: string }>
   /** Caret of the focused SQL editor (1-based), for the status bar. */
   cursor: { line: number; col: number } | null
   paletteOpen: boolean
@@ -93,6 +95,7 @@ export const useStore = create<State>(() => ({
   bottomView: 'output',
   results: {},
   running: {},
+  failed: {},
   cursor: null,
   paletteOpen: false,
   settings: null,
@@ -892,6 +895,13 @@ export async function runQuery(
 ) {
   const text = sql.trim()
   if (!text || useStore.getState().running[tabId]) return
+  const failed = (err: { error: string; detail?: string }) =>
+    useStore.setState((s) => ({
+      failed: { ...s.failed, [tabId]: err },
+      bottomOpen: true,
+      bottomView: 'output'
+    }))
+  dismissFailure(tabId)
   // Not connected: connect first (or wait for the reconnect), then run.
   if (useStore.getState().connections[connectionId]?.state !== 'connected')
     await ensureConnected(connectionId)
@@ -899,14 +909,9 @@ export async function runQuery(
   const at = Date.now()
   const base = { sql: text, database, at, source: title }
   if (conn?.state !== 'connected') {
-    log(connectionId, {
-      ...base,
-      id: nextId++,
-      ms: 0,
-      rows: null,
-      error: `${conn?.name ?? 'Connection'} is not connected`
-    })
-    useStore.setState({ bottomOpen: true, bottomView: 'output' })
+    const error = `${conn?.name ?? 'Connection'} is not connected`
+    log(connectionId, { ...base, id: nextId++, ms: 0, rows: null, error })
+    failed({ error })
     return
   }
   // Guard rails: no way out of read-only, and a confirmation before
@@ -914,11 +919,11 @@ export async function runQuery(
   const writable = conn.readOnly ? readOnlyEscape(text) : null
   if (writable) {
     log(connectionId, { ...base, id: nextId++, ms: 0, rows: null, error: `Not run: ${writable}` })
-    useStore.setState({ bottomOpen: true, bottomView: 'output' })
+    failed({ error: `Not run: ${writable}` })
     return
   }
   if (!(await confirmRun(conn, database, text))) return
-  useStore.setState((s) => ({ running: { ...s.running, [tabId]: true } }))
+  useStore.setState((s) => ({ running: { ...s.running, [tabId]: Date.now() } }))
   try {
     const pageSize = usePrefs.getState().rowLimit
     const res = await backend.runQuery(connectionId, database, text, pageSize)
@@ -964,8 +969,9 @@ export async function runQuery(
     if (/^\s*(create|drop|alter)\b/i.test(text))
       void loadDatabase(connectionId, database, { force: true })
   } catch (e) {
-    log(connectionId, { ...base, id: nextId++, ms: Date.now() - at, rows: null, ...errorText(e) })
-    useStore.setState({ bottomOpen: true, bottomView: 'output' })
+    const err = errorText(e)
+    log(connectionId, { ...base, id: nextId++, ms: Date.now() - at, rows: null, ...err })
+    failed(err)
     if (toBackendError(e).code === 'not_connected')
       patchConnection(connectionId, { state: 'disconnected' })
   } finally {
@@ -974,6 +980,15 @@ export async function runQuery(
       return { running }
     })
   }
+}
+
+/** Drops a tab's failure banner (it also goes with the tab's next run). */
+export function dismissFailure(tabId: string) {
+  useStore.setState((s) => {
+    if (!s.failed[tabId]) return {}
+    const { [tabId]: _, ...failed } = s.failed
+    return { failed }
+  })
 }
 
 /** Adds a run that didn't go through `runQuery` (grid edits) to the Output log. */
@@ -1000,7 +1015,7 @@ export async function pageResult(tabId: string, offset: number) {
   if (!r?.pageable || useStore.getState().running[tabId]) return
   const at = Date.now()
   const base = { sql: r.sql, database: r.database, at, source: r.title }
-  useStore.setState((s) => ({ running: { ...s.running, [tabId]: true } }))
+  useStore.setState((s) => ({ running: { ...s.running, [tabId]: at } }))
   try {
     const res = await backend.runQuery(r.connectionId, r.database, r.sql, r.pageSize, offset)
     log(

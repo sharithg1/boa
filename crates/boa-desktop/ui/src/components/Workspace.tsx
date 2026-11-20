@@ -19,6 +19,7 @@ import {
 import {
   cancelQuery,
   connect,
+  dismissFailure,
   dbKey,
   describeError,
   findTable,
@@ -59,6 +60,7 @@ import { CompletionPopup, caretBox, charWidth } from './CompletionPopup'
 import { StatementChooser } from './StatementChooser'
 import { complete, type CompletionResult } from '@/lib/complete'
 import { TxControls } from './TxControls'
+import { RunFailed, RunStatus } from './RunProgress'
 import { ConnectionStripe } from './ConnectionTag'
 import { TableFilterBar } from './TableFilterBar'
 
@@ -144,7 +146,9 @@ function QueryView({
 }) {
   const key = dbKey(connectionId, database)
   const connecting = useStore((s) => s.connections[connectionId]?.state === 'connecting')
-  const running = useStore((s) => !!s.running[tab.id])
+  const runningSince = useStore((s) => s.running[tab.id])
+  const running = runningSince != null
+  const failed = useStore((s) => s.failed[tab.id])
   const db = useStore((s) =>
     s.connections[connectionId]?.databases.find((d) => d.name === database)
   )
@@ -302,7 +306,7 @@ function QueryView({
           tabId={tab.id}
           title={tab.title}
         />
-        {running && <span className="ml-2 text-xs text-dim">Executing…</span>}
+        {running && <RunStatus since={runningSince} className="ml-2" />}
         <span className="flex-1" />
         <DropdownMenu>
           <DropdownMenuTrigger className={cn(TOOL_BTN, 'font-mono')} title="Default schema">
@@ -486,6 +490,7 @@ function QueryView({
           )}
         </div>
       </div>
+      {failed && !running && <RunFailed {...failed} onDismiss={() => dismissFailure(tab.id)} />}
     </div>
   )
 }

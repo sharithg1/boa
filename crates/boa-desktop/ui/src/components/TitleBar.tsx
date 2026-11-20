@@ -52,6 +52,7 @@ import {
   DropdownMenuTrigger
 } from '@/components/ui/dropdown-menu'
 import { IconButton } from './IconButton'
+import { Spinner } from '@/components/ui/spinner'
 import { SidebarToggle } from './Sidebar'
 import { connectionColor } from '@/lib/connTag'
 
@@ -175,6 +176,7 @@ function Tabs({ connectionId, database }: { connectionId: string; database: stri
   const key = dbKey(connectionId, database)
   const ws = useStore((s) => s.workspaces[key])
   const connected = useStore((s) => s.connections[connectionId]?.state === 'connected')
+  const running = useStore((s) => s.running)
   const tabs = ws?.tabs ?? []
   const activeTab = ws?.activeTab ?? null
   const stripRef = useRef<HTMLDivElement>(null)
@@ -268,7 +270,11 @@ function Tabs({ connectionId, database }: { connectionId: string; database: stri
                 dragging === id && 'z-10 cursor-grabbing bg-hover-strong text-foreground'
               )}
             >
-              <Icon className="size-3.5 shrink-0 text-quiet" />
+              {id in running ? (
+                <Spinner aria-label="Running" className="size-3.5 shrink-0 text-status-run" />
+              ) : (
+                <Icon className="size-3.5 shrink-0 text-quiet" />
+              )}
               <span
                 className={cn(
                   'whitespace-nowrap',

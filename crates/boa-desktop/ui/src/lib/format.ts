@@ -30,6 +30,14 @@ export function bytes(n: number): string {
   return `${x < 10 && i ? x.toFixed(1) : Math.round(x)} ${u[i]}`
 }
 
+/** A running clock: 400 → "0.4 s", 12340 → "12.3 s", 75000 → "1 m 15 s". */
+export function elapsed(ms: number): string {
+  const t = Math.max(0, ms)
+  if (t < 60_000) return `${(Math.floor(t / 100) / 10).toFixed(1)} s`
+  const s = Math.floor(t / 1000)
+  return `${Math.floor(s / 60)} m ${String(s % 60).padStart(2, '0')} s`
+}
+
 /** "now", "5m", "3h", "2d". */
 export function ago(ms: number, now = Date.now()): string {
   const s = Math.max(0, Math.round((now - ms) / 1000))

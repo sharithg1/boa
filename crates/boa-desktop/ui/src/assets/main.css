@@ -368,6 +368,53 @@
   display: none;
 }
 
+/* A statement in flight (components/RunProgress.tsx): a comet that sweeps the
+   edge of a toolbar, easing in and out so it reads as momentum. Shown after a
+   beat, so a statement that returns at once doesn't flash it. */
+@keyframes run-fade-in {
+  from {
+    opacity: 0;
+  }
+}
+@keyframes run-bar-sweep {
+  from {
+    transform: translateX(-100%);
+  }
+  to {
+    transform: translateX(250%);
+  }
+}
+.run-fade-in {
+  animation: run-fade-in 150ms 120ms both;
+}
+.run-bar {
+  position: absolute;
+  inset-inline: 0;
+  z-index: 1;
+  height: 2px;
+  overflow: hidden;
+  pointer-events: none;
+  animation: run-fade-in 150ms 120ms both;
+}
+.run-bar::before {
+  content: '';
+  position: absolute;
+  inset-block: 0;
+  left: 0;
+  width: 40%;
+  border-radius: 1px;
+  background: linear-gradient(90deg, transparent, var(--status-run) 60%);
+  animation: run-bar-sweep 1.1s cubic-bezier(0.65, 0, 0.35, 1) infinite;
+}
+@media (prefers-reduced-motion: reduce) {
+  .run-bar::before {
+    width: 100%;
+    background: var(--status-run);
+    opacity: 0.6;
+    animation: none;
+  }
+}
+
 /* Keep rotation on the compositor (Orca #12359). One day per iteration avoids
    per-second animation events; still 12 steps/second. */
 @keyframes agent-spinner-rotate {

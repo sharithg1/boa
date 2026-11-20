@@ -65,8 +65,8 @@ type State = {
   bottomView: 'output' | string
   /** Latest result of each editor tab, by tab id. */
   results: Record<string, ResultSet>
-  /** Tabs with a statement in flight, by tab id. */
-  running: Record<string, true>
+  /** Tabs with a statement in flight, by tab id: when it started (ms epoch). */
+  running: Record<string, number>
   /** Caret of the focused SQL editor (1-based), for the status bar. */
   cursor: { line: number; col: number } | null
   paletteOpen: boolean
@@ -918,7 +918,7 @@ export async function runQuery(
     return
   }
   if (!(await confirmRun(conn, database, text))) return
-  useStore.setState((s) => ({ running: { ...s.running, [tabId]: true } }))
+  useStore.setState((s) => ({ running: { ...s.running, [tabId]: Date.now() } }))
   try {
     const pageSize = usePrefs.getState().rowLimit
     const res = await backend.runQuery(connectionId, database, text, pageSize)
@@ -1000,7 +1000,7 @@ export async function pageResult(tabId: string, offset: number) {
   if (!r?.pageable || useStore.getState().running[tabId]) return
   const at = Date.now()
   const base = { sql: r.sql, database: r.database, at, source: r.title }
-  useStore.setState((s) => ({ running: { ...s.running, [tabId]: true } }))
+  useStore.setState((s) => ({ running: { ...s.running, [tabId]: at } }))
   try {
     const res = await backend.runQuery(r.connectionId, r.database, r.sql, r.pageSize, offset)
     log(

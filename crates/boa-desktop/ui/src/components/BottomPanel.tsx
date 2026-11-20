@@ -14,6 +14,8 @@ import { ExportMenu } from './CsvExport'
 import { DataGrid } from './DataGrid'
 import { IconButton } from './IconButton'
 import { Pager } from './Pager'
+import { RunBar } from './RunProgress'
+import { Spinner } from '@/components/ui/spinner'
 import { PanelResizeHandle } from './PanelResizeHandle'
 
 export function BottomPanel() {
@@ -31,7 +33,10 @@ export function BottomPanel() {
   const current = view !== 'output' ? results[view] : undefined
   const sourceTab = tabs?.find((t) => t.id === current?.tabId)
   const conn = useStore((s) => (active ? s.connections[active.connectionId] : undefined))
-  const paging = useStore((s) => (current ? !!s.running[current.tabId] : false))
+  const running = useStore((s) => s.running)
+  const paging = current ? current.tabId in running : false
+  // A statement of this database is in flight: its outcome lands here.
+  const busy = (tabs ?? []).some((t) => t.id in running)
 
   return (
     <section
@@ -47,7 +52,8 @@ export function BottomPanel() {
         onCommit={(h) => setPrefs({ bottomHeight: h })}
         onReset={() => setPrefs({ bottomHeight: DEFAULT_PREFS.bottomHeight })}
       />
-      <div className="flex h-9 shrink-0 items-center gap-0.5 border-b border-border px-2 select-none">
+      <div className="relative flex h-9 shrink-0 items-center gap-0.5 border-b border-border px-2 select-none">
+        {busy && <RunBar />}
         <span className="mr-2 pl-1 text-sm font-medium text-foreground">Database Output</span>
         <div
           className="no-scrollbar flex min-w-0 items-center gap-0.5 overflow-x-auto"
@@ -68,7 +74,13 @@ export function BottomPanel() {
                 selected={view === t.id}
                 onClick={() => useStore.setState({ bottomView: t.id })}
                 onClose={() => closeResult(t.id)}
-                icon={<Table2 className="size-3.5 shrink-0" />}
+                icon={
+                  t.id in running ? (
+                    <Spinner aria-label="Running" className="size-3.5 shrink-0 text-status-run" />
+                  ) : (
+                    <Table2 className="size-3.5 shrink-0" />
+                  )
+                }
                 title={r.sql}
               >
                 <span className="font-mono text-sm">{r.title}</span>

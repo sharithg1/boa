@@ -59,6 +59,7 @@ import { CompletionPopup, caretBox, charWidth } from './CompletionPopup'
 import { StatementChooser } from './StatementChooser'
 import { complete, type CompletionResult } from '@/lib/complete'
 import { TxControls } from './TxControls'
+import { RunBar, RunStatus } from './RunProgress'
 import { ConnectionStripe } from './ConnectionTag'
 import { TableFilterBar } from './TableFilterBar'
 
@@ -114,10 +115,11 @@ export function Workspace() {
 }
 
 /** Toolbar row above an editor or grid. */
-function Toolbar({ children }: { children: ReactNode }) {
+function Toolbar({ busy, children }: { busy?: boolean; children: ReactNode }) {
   return (
-    <div className="flex h-9 shrink-0 items-center gap-0.5 border-b border-border px-2">
+    <div className="relative flex h-9 shrink-0 items-center gap-0.5 border-b border-border px-2">
       {children}
+      {busy && <RunBar />}
     </div>
   )
 }
@@ -144,7 +146,8 @@ function QueryView({
 }) {
   const key = dbKey(connectionId, database)
   const connecting = useStore((s) => s.connections[connectionId]?.state === 'connecting')
-  const running = useStore((s) => !!s.running[tab.id])
+  const runningSince = useStore((s) => s.running[tab.id])
+  const running = runningSince != null
   const db = useStore((s) =>
     s.connections[connectionId]?.databases.find((d) => d.name === database)
   )
@@ -273,7 +276,7 @@ function QueryView({
 
   return (
     <div className="flex h-full flex-col">
-      <Toolbar>
+      <Toolbar busy={running}>
         <IconButton
           label="Execute (⌘↵)"
           side="bottom"
@@ -302,7 +305,7 @@ function QueryView({
           tabId={tab.id}
           title={tab.title}
         />
-        {running && <span className="ml-2 text-xs text-dim">Executing…</span>}
+        {running && <RunStatus since={runningSince} className="ml-2" />}
         <span className="flex-1" />
         <DropdownMenu>
           <DropdownMenuTrigger className={cn(TOOL_BTN, 'font-mono')} title="Default schema">

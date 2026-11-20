@@ -213,14 +213,22 @@ async fn apply_edits(
     pg.apply_edits(&id, &database, &statements).await
 }
 
-/// The connection's query history, oldest first.
+/// Start of a query history retention period of `days` (0 or absent: no limit).
+fn history_cutoff(days: Option<u32>) -> Option<f64> {
+    let days = days.filter(|d| *d > 0)?;
+    let now = SystemTime::now().duration_since(UNIX_EPOCH).ok()?;
+    Some(now.as_secs_f64() * 1000.0 - f64::from(days) * 86_400_000.0)
+}
+
+/// The connection's query history of the last `days`, oldest first.
 #[tauri::command]
 fn history_list(
     app: AppHandle,
     history: State<'_, History>,
     id: String,
+    days: Option<u32>,
 ) -> CmdResult<Vec<history::Entry>> {
-    history.list(&config_dir(&app)?, &id)
+    history.list(&config_dir(&app)?, &id, history_cutoff(days))
 }
 
 #[tauri::command]
@@ -229,8 +237,9 @@ fn history_append(
     history: State<'_, History>,
     id: String,
     entry: history::Entry,
+    days: Option<u32>,
 ) -> CmdResult<()> {
-    history.append(&config_dir(&app)?, &id, &entry)
+    history.append(&config_dir(&app)?, &id, &entry, history_cutoff(days))
 }
 
 #[tauri::command]

@@ -66,7 +66,8 @@ state (idle, open, aborted) is always shown, and Boa asks before
 disconnecting or quitting with one open.
 
 ### Query history
-Every statement you run is saved per connection, failures included. Search
+The queries you run are saved per connection for 30 days (configurable),
+failures included; re-running one with other values updates its entry. Search
 it as you type (<kbd>⌘⌥E</kbd>), then insert a statement into a console or
 open it in a new one.
 

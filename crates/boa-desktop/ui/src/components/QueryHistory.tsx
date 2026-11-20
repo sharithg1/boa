@@ -1,5 +1,5 @@
 // Query History (DataGrip's), opened with ⌘⌥E, the console toolbar's
-// history button or from the ⌘K palette: every statement run on the active
+// history button or from the ⌘K palette: the queries run on the active
 // connection (or on all of them), newest first, searchable as you type, with
 // an errors-only filter. The list is windowed so thousands of entries stay
 // fast. The detail pane shows the whole statement and error; ⏎ inserts the

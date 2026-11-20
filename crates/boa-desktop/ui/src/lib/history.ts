@@ -1,12 +1,16 @@
 // Persistent query history: the record shape stored per connection (the
-// Rust side's `history.rs` keeps it as JSON lines), search, previews, and
-// the localStorage store the browser mock uses in place of the files.
+// Rust side's `history.rs` keeps it as JSON lines), the key that makes two
+// runs "the same query", search, previews, and the localStorage store the
+// browser mock uses in place of the files.
 import type { HistoryEntry } from '@/state/types'
+import { tokenize } from './sql'
 
 /** One executed statement as stored on disk. */
 export type HistoryRecord = {
   id: string
   sql: string
+  /** `queryKey(sql)`: a later run with the same key replaces this record. */
+  key?: string
   database: string
   /** When it ran (ms since the epoch). */
   at: number
@@ -28,8 +32,76 @@ export type HistoryRecord = {
 /** A record with the connection it belongs to, as the history view lists it. */
 export type HistoryItem = HistoryRecord & { connectionId: string }
 
-/** Entries kept per connection; matches `CAP` in `src/history.rs`. */
+/** Distinct queries kept per connection; matches `CAP` in `src/history.rs`. */
 export const HISTORY_CAP = 5000
+
+/** Days of history kept by default (Settings → Queries; 0 keeps it all). */
+export const HISTORY_DAYS = 30
+
+/** Runs before this time (ms since the epoch) are past `days` of retention; none when 0. */
+export function historyCutoff(days: number, now = Date.now()): number | undefined {
+  return days > 0 ? now - days * 86_400_000 : undefined
+}
+
+/**
+ * What makes two statements the same query: the SQL with its values
+ * (strings, numbers, `$1` / `:name` parameters) replaced by `?`, comments
+ * and spacing dropped, and unquoted text lower-cased. The values of an
+ * `in (1, 2, 3)` list count as one, whatever their number. Quoted
+ * identifiers are kept as written.
+ */
+export function queryKey(sql: string): string {
+  const quoted: string[] = []
+  let out = ''
+  for (const t of tokenize(sql)) {
+    if (t.kind === 'comment') out += ' '
+    else if (t.kind === 'string' || t.kind === 'number' || t.kind === 'param') out += '?'
+    else
+      out += t.text.replace(/"[^"]*"|`[^`]*`|[^"`]+/g, (m) => {
+        if (m[0] !== '"' && m[0] !== '`') return m.toLowerCase()
+        // Set aside, so the clean-up below leaves the name alone.
+        quoted.push(m)
+        return `\u0001${quoted.length - 1}\u0001`
+      })
+  }
+  return (
+    out
+      .replace(/\s+/g, ' ')
+      .replace(/ ?([=<>!,()+\-*/%|;]) ?/g, '$1')
+      .replace(/\bin\(\?(,\?)+\)/g, 'in(?)')
+      .replace(/[; ]+$/, '')
+      .trim()
+      // biome-ignore lint/suspicious/noControlCharactersInRegex: the marker put in above
+      .replace(/\u0001(\d+)\u0001/g, (_, i: string) => quoted[Number(i)]!)
+  )
+}
+
+/** A record's key (computed for records saved before keys were). */
+export function recordKey(r: HistoryRecord): string {
+  return r.key ?? queryKey(r.sql)
+}
+
+/**
+ * The newest record of each query, from a newest-first list, capped;
+ * `cutoff` drops runs older than it.
+ */
+export function dedupeQueries<T extends HistoryRecord>(
+  items: readonly T[],
+  cap = HISTORY_CAP,
+  cutoff?: number
+): T[] {
+  const seen = new Set<string>()
+  const out: T[] = []
+  for (const r of items) {
+    if (out.length >= cap) break
+    if (cutoff !== undefined && r.at < cutoff) continue
+    const k = recordKey(r)
+    if (seen.has(k)) continue
+    seen.add(k)
+    out.push(r)
+  }
+  return out
+}
 
 export function newHistoryId(): string {
   if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function')
@@ -39,7 +111,14 @@ export function newHistoryId(): string {
 
 /** The stored form of an Output log entry (no session-only fields, no nulls). */
 export function toRecord(e: HistoryEntry, id = newHistoryId()): HistoryRecord {
-  const r: HistoryRecord = { id, sql: e.sql, database: e.database, at: e.at, ms: e.ms }
+  const r: HistoryRecord = {
+    id,
+    sql: e.sql,
+    key: queryKey(e.sql),
+    database: e.database,
+    at: e.at,
+    ms: e.ms
+  }
   if (e.rows != null) r.rows = e.rows
   if (e.truncated) r.truncated = true
   if (e.affected != null) r.affected = e.affected
@@ -91,16 +170,18 @@ export function mergeNewestFirst<T extends HistoryRecord>(lists: readonly (reado
 
 /**
  * Prepends records made while a load was in flight to the loaded list
- * (newest first), skipping ones the load already returned, and caps it.
+ * (newest first), skipping ones the load already returned, and keeps the
+ * newest run of each query, capped and no older than `cutoff`.
  */
 export function mergeLoaded(
   loaded: readonly HistoryRecord[],
   pending: readonly HistoryRecord[],
-  cap = HISTORY_CAP
+  cap = HISTORY_CAP,
+  cutoff?: number
 ): HistoryRecord[] {
   const seen = new Set(loaded.map((r) => r.id))
   const extra = pending.filter((r) => !seen.has(r.id))
-  return mergeNewestFirst([extra, loaded]).slice(0, cap)
+  return dedupeQueries(mergeNewestFirst([extra, loaded]), cap, cutoff)
 }
 
 // ── Display ───────────────────────────────────────────────────────────────
@@ -153,7 +234,11 @@ export function insertionText(before: string, after: string, sql: string): strin
 
 type KV = Pick<Storage, 'getItem' | 'setItem' | 'removeItem'>
 
-/** The history files' operations over localStorage (oldest first, capped). */
+/**
+ * The history files' operations over localStorage (oldest first, one per
+ * query, capped). Like the Rust side, `list` hides runs older than `cutoff`
+ * and `append` drops them.
+ */
 export function localHistoryStore(kv: KV | undefined, cap = HISTORY_CAP) {
   const key = (id: string) => `boa.history.${id}`
   const read = (id: string): HistoryRecord[] => {
@@ -173,9 +258,13 @@ export function localHistoryStore(kv: KV | undefined, cap = HISTORY_CAP) {
     }
   }
   return {
-    list: (id: string) => read(id),
-    append: (id: string, r: HistoryRecord) => {
-      const list = read(id)
+    list: (id: string, cutoff?: number) =>
+      read(id).filter((x) => cutoff === undefined || x.at >= cutoff),
+    append: (id: string, r: HistoryRecord, cutoff?: number) => {
+      const k = recordKey(r)
+      const list = read(id).filter(
+        (x) => recordKey(x) !== k && (cutoff === undefined || x.at >= cutoff)
+      )
       list.push(r)
       write(id, list.slice(-cap))
     },

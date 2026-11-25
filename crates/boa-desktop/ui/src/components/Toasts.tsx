@@ -1,6 +1,7 @@
 // In-app toasts, rendered by sonner (shadcn `sonner`, see ui/sonner.tsx). The
-// store stays the source of truth (pushToast / dismissToast, TTL and the
-// 5-toast cap live there); this bridge mirrors store.toasts into sonner.
+// store stays the source of truth (pushToast / dismissToast, TTL, keyed
+// replacement and the 5-toast cap live there); this bridge mirrors
+// store.toasts into sonner, updating a toast in place when it was replaced.
 import { useEffect, useRef } from 'react'
 import { X } from 'lucide-react'
 import { toast as sonner } from 'sonner'
@@ -11,19 +12,20 @@ import { StatusDot } from './StatusDot'
 
 export function Toasts() {
   const toasts = useStore((s) => s.toasts)
-  const shown = useRef(new Set<number>())
+  // What sonner shows for each id (a keyed toast can be replaced under the same id).
+  const shown = useRef(new Map<number, Toast>())
 
   useEffect(() => {
     const live = new Set(toasts.map((t) => t.id))
-    for (const id of shown.current) {
+    for (const id of shown.current.keys()) {
       if (!live.has(id)) {
         shown.current.delete(id)
         sonner.dismiss(id)
       }
     }
     for (const t of toasts) {
-      if (shown.current.has(t.id)) continue
-      shown.current.add(t.id)
+      if (shown.current.get(t.id) === t) continue
+      shown.current.set(t.id, t)
       sonner.custom(() => <ToastCard toast={t} />, {
         id: t.id,
         // The store owns expiry (pushToast's ttlMs).

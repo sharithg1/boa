@@ -4,6 +4,7 @@ import {
   checkConnections,
   disconnect,
   ensureConnected,
+  pushToast,
   RETRY_DELAYS_MS,
   recover,
   runQuery,
@@ -91,6 +92,69 @@ describe('reconnecting', () => {
     const toast = useStore.getState().toasts[0]!
     expect(toast.title).toBe('Lost connection to Local')
     expect(toast.action?.label).toBe('Retry')
+  })
+
+  it('failing again replaces the lost-connection toast instead of stacking another', async () => {
+    vi.spyOn(backend, 'ping').mockRejectedValue(unreachable)
+    for (let round = 0; round < 2; round++) {
+      const done = recover('c1')
+      for (const ms of RETRY_DELAYS_MS) await vi.advanceTimersByTimeAsync(ms)
+      expect(await done).toBe(false)
+    }
+    expect(toasts()).toEqual(['Lost connection to Local'])
+  })
+
+  it('a background retry of a failed connection gives up without a new toast', async () => {
+    useStore.setState({ connections: { c1: conn('failed') } })
+    const ping = vi.spyOn(backend, 'ping').mockRejectedValue(unreachable)
+    checkConnections()
+    for (const ms of RETRY_DELAYS_MS) await vi.advanceTimersByTimeAsync(ms)
+    expect(ping).toHaveBeenCalledTimes(RETRY_DELAYS_MS.length + 1)
+    expect(state()).toBe('failed')
+    expect(toasts()).toEqual([])
+  })
+
+  it('Retry during a background retry shows how it ends', async () => {
+    useStore.setState({ connections: { c1: conn('failed') } })
+    vi.spyOn(backend, 'ping').mockRejectedValue(unreachable)
+    checkConnections()
+    await settle()
+    const done = recover('c1')
+    for (const ms of RETRY_DELAYS_MS) await vi.advanceTimersByTimeAsync(ms)
+    expect(await done).toBe(false)
+    expect(toasts()).toEqual(['Lost connection to Local'])
+  })
+
+  it('getting back replaces the lost-connection toast', async () => {
+    vi.spyOn(backend, 'ping').mockRejectedValue(unreachable)
+    const lost = recover('c1')
+    for (const ms of RETRY_DELAYS_MS) await vi.advanceTimersByTimeAsync(ms)
+    await lost
+    vi.spyOn(backend, 'ping').mockRejectedValueOnce(unreachable).mockResolvedValue({ lostTx: [] })
+    checkConnections()
+    await vi.advanceTimersByTimeAsync(RETRY_DELAYS_MS[0]!)
+    expect(state()).toBe('connected')
+    expect(toasts()).toEqual(['Reconnected to Local'])
+  })
+
+  it('back on the first try drops the lost-connection toast', async () => {
+    vi.spyOn(backend, 'ping').mockRejectedValue(unreachable)
+    const lost = recover('c1')
+    for (const ms of RETRY_DELAYS_MS) await vi.advanceTimersByTimeAsync(ms)
+    await lost
+    vi.spyOn(backend, 'ping').mockResolvedValue({ lostTx: [] })
+    checkConnections()
+    await settle()
+    expect(state()).toBe('connected')
+    expect(toasts()).toEqual([])
+  })
+
+  it('a keyed toast replacing a timed one keeps its own lifetime', async () => {
+    const first = pushToast({ key: 'k', kind: 'success', title: 'one' }, 1000)
+    const second = pushToast({ key: 'k', kind: 'error', title: 'two' }, 0)
+    expect(second).toBe(first)
+    await vi.advanceTimersByTimeAsync(5000)
+    expect(toasts()).toEqual(['two'])
   })
 
   it('connects again when the backend no longer has the connection open', async () => {

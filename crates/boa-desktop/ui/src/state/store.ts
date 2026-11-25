@@ -36,6 +36,8 @@ export type SettingsPage = 'general' | 'connections' | 'keyboard'
 
 export type Toast = {
   id: number
+  /** A toast pushed with the key of one still showing replaces it. */
+  key?: string
   kind: 'info' | 'success' | 'error'
   title: string
   body?: string
@@ -519,6 +521,7 @@ function connectNow(
       shown.forEach((name, i) => {
         if (i === 0 || expanded[schemaScopeKey(id, name)]) void loadDatabase(id, name)
       })
+      clearFailureToast(id)
       return { ok: true }
     } catch (e) {
       const err = toBackendError(e)
@@ -534,7 +537,12 @@ function connectNow(
           }
         })
       } else if (opts.toast !== false) {
-        pushToast({ kind: 'error', title: `Could not connect to ${conn.name}`, body: err.message })
+        pushToast({
+          key: connToastKey(id),
+          kind: 'error',
+          title: `Could not connect to ${conn.name}`,
+          body: err.message
+        })
       }
       return { ok: false, error: err }
     }
@@ -578,6 +586,7 @@ export async function disconnect(id: string) {
   if (!(await confirmCloseTx('disconnect', { [id]: name }, id))) return
   stopRecovery(id)
   unwant(id)
+  clearFailureToast(id)
   patchConnection(id, { state: 'disconnected', latencyMs: null })
   try {
     await backend.disconnect(id)
@@ -601,7 +610,9 @@ function unwant(id: string) {
 // new launch), retrying with growing delays while the server can't be
 // reached. Meanwhile it shows as `reconnecting`; after the last attempt as
 // `failed`, with a Retry toast. Waking from sleep and the network coming
-// back check every wanted connection.
+// back check every wanted connection. A connection has one status toast at a
+// time (keyed by `connToastKey`), and a background retry of one already shown
+// as failed doesn't announce failing again.
 
 /** Delays before each retry; once they run out the connection shows as failed. */
 export const RETRY_DELAYS_MS = [1_000, 2_000, 4_000, 8_000, 15_000, 30_000, 30_000, 30_000]
@@ -618,6 +629,8 @@ type Recovery = {
   attempt?: Promise<boolean>
   /** It showed as reconnecting (so getting back is worth a toast). */
   flagged: boolean
+  /** A background retry of a connection already shown as failed: giving up again says nothing. */
+  background: boolean
   done: Promise<boolean>
   resolve: (ok: boolean) => void
 }
@@ -630,15 +643,23 @@ const recoveries = new Map<string, Recovery>()
  */
 export function recover(
   id: string,
-  { reason = 'lost', quiet = false }: { reason?: RecoverReason; quiet?: boolean } = {}
+  {
+    reason = 'lost',
+    quiet = false,
+    background = false
+  }: { reason?: RecoverReason; quiet?: boolean; background?: boolean } = {}
 ): Promise<boolean> {
   const running = recoveries.get(id)
-  if (running) return running.done
+  if (running) {
+    // Asked for (Retry) while a background retry runs: its outcome is shown.
+    if (!background) running.background = false
+    return running.done
+  }
   let resolve!: (ok: boolean) => void
   const done = new Promise<boolean>((r) => {
     resolve = r
   })
-  recoveries.set(id, { reason, quiet, tries: 0, flagged: false, done, resolve })
+  recoveries.set(id, { reason, quiet, tries: 0, flagged: false, background, done, resolve })
   void step(id)
   return done
 }
@@ -686,8 +707,7 @@ async function attemptRecovery(id: string, r: Recovery): Promise<boolean> {
       latencyMs: Math.round(performance.now() - started)
     })
     finish(id, r, true)
-    if (r.flagged && r.reason !== 'restore')
-      pushToast({ kind: 'success', title: `Reconnected to ${name()}` })
+    announceBack(id, r)
     return true
   } catch (e) {
     error = toBackendError(e)
@@ -699,8 +719,7 @@ async function attemptRecovery(id: string, r: Recovery): Promise<boolean> {
     if (recoveries.get(id) !== r) return res.ok
     if (res.ok) {
       finish(id, r, true)
-      if (r.flagged && r.reason !== 'restore')
-        pushToast({ kind: 'success', title: `Reconnected to ${name()}` })
+      announceBack(id, r)
       return true
     }
     error = res.error
@@ -709,7 +728,12 @@ async function attemptRecovery(id: string, r: Recovery): Promise<boolean> {
       if (isAuthError(error)) {
         if (r.quiet) unwant(id)
       } else
-        pushToast({ kind: 'error', title: `Could not connect to ${name()}`, body: error.message })
+        pushToast({
+          key: connToastKey(id),
+          kind: 'error',
+          title: `Could not connect to ${name()}`,
+          body: error.message
+        })
       finish(id, r, false)
       return false
     }
@@ -718,8 +742,10 @@ async function attemptRecovery(id: string, r: Recovery): Promise<boolean> {
   if (delay === undefined) {
     patchConnection(id, { state: 'failed', latencyMs: null })
     finish(id, r, false)
+    if (r.background) return false
     pushToast(
       {
+        key: connToastKey(id),
         kind: 'error',
         title:
           r.reason === 'restore'
@@ -736,6 +762,23 @@ async function attemptRecovery(id: string, r: Recovery): Promise<boolean> {
   patchConnection(id, { state: 'reconnecting', latencyMs: null })
   r.timer = setTimeout(() => void step(id), delay)
   return false
+}
+
+/** Says the connection is back if it showed as reconnecting (replacing its failure toast). */
+function announceBack(id: string, r: Recovery) {
+  if (r.flagged && r.reason !== 'restore') {
+    const name = useStore.getState().connections[id]?.name ?? id
+    pushToast({ key: connToastKey(id), kind: 'success', title: `Reconnected to ${name}` })
+  } else clearFailureToast(id)
+}
+
+/** The key of a connection's status toast (lost, could not connect, reconnected). */
+const connToastKey = (id: string) => `conn:${id}`
+
+/** Drops a connection's failure toast, once it connected or was disconnected. */
+function clearFailureToast(id: string) {
+  const t = useStore.getState().toasts.find((t) => t.key === connToastKey(id))
+  if (t?.kind === 'error') dismissToast(t.id)
 }
 
 function finish(id: string, r: Recovery, ok: boolean) {
@@ -777,7 +820,8 @@ export function checkConnections() {
     const state = s.connections[id]?.state
     if (recoveries.has(id)) void retryNow(id)
     else if (state === 'connected') void recover(id, { reason: 'wake' })
-    else if (state === 'failed' || state === 'reconnecting') void recover(id, { reason: 'lost' })
+    else if (state === 'failed' || state === 'reconnecting')
+      void recover(id, { reason: 'lost', background: true })
   }
 }
 
@@ -1079,14 +1123,33 @@ export function closeResult(tabId: string) {
 
 // ── Toasts ────────────────────────────────────────────────────────────────
 
+const toastTimers = new Map<number, ReturnType<typeof setTimeout>>()
+
+/**
+ * Shows a toast for `ttlMs` (0: until dismissed). One with the `key` of a
+ * toast still showing replaces it in place (keeping its id) instead of stacking.
+ */
 export function pushToast(t: Omit<Toast, 'id'>, ttlMs = 6000): number {
-  const id = nextId++
-  useStore.setState((s) => ({ toasts: [...s.toasts, { ...t, id }].slice(-5) }))
-  if (ttlMs > 0) setTimeout(() => dismissToast(id), ttlMs)
+  const same = t.key ? useStore.getState().toasts.find((x) => x.key === t.key) : undefined
+  const id = same?.id ?? nextId++
+  clearTimeout(toastTimers.get(id))
+  toastTimers.delete(id)
+  useStore.setState((s) => ({
+    toasts: same
+      ? s.toasts.map((x) => (x.id === id ? { ...t, id } : x))
+      : [...s.toasts, { ...t, id }].slice(-5)
+  }))
+  if (ttlMs > 0)
+    toastTimers.set(
+      id,
+      setTimeout(() => dismissToast(id), ttlMs)
+    )
   return id
 }
 
 export function dismissToast(id: number) {
+  clearTimeout(toastTimers.get(id))
+  toastTimers.delete(id)
   useStore.setState((s) => ({ toasts: s.toasts.filter((t) => t.id !== id) }))
 }
 

@@ -164,8 +164,9 @@ connection), failed ones with their error, and kept for 30 days (Settings →
 Queries: 7 days to forever; at most 5,000 per connection). A query run
 again replaces its earlier entry, also when only its values differ (string
 and number literals, `$1` / `:name` parameters, the length of an `IN` list),
-so the entry shows the latest values. Paging through a result does not add
-entries.
+so the entry shows the latest values. Paging through a result and
+transaction control on its own (`BEGIN`, `COMMIT`, `ROLLBACK`, `SAVEPOINT`, …)
+do not add entries.
 
 Search matches words in the SQL as you type, with an errors-only filter and
 a toggle for all connections; ⏎ inserts the statement at the console's

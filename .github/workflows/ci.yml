@@ -5,6 +5,9 @@ on:
   push:
     branches: [main]
   workflow_dispatch:
+  # Release runs it on the release commit (pushed with a deploy key / as a tag,
+  # which run no CI of their own) and publishes only if it passes.
+  workflow_call:
 
 concurrency:
   group: ci-${{ github.ref }}

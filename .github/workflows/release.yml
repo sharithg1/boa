@@ -1,23 +1,26 @@
-name: Release build
+name: Release
 
-# Builds Boa.app (GPUI) for both architectures and as a universal bundle,
-# with ad-hoc signatures, and keeps the results as workflow artifacts.
-# MANUAL ONLY (Actions -> Release build -> Run workflow): nothing here signs
-# with a Developer ID, notarizes, signs update bundles or publishes a release.
-# Those steps need the repository secrets listed in docs/RELEASING.md and are
-# added when the user decides to ship ("The bridge release" there).
+# Pushing a tag vX.Y.Z (Actions -> Cut release, or scripts/release.sh + push)
+# builds Boa.app for both architectures and publishes a GitHub Release with
+# the in-app update bundles and latest.json. A manual run on a branch, and pull
+# requests that touch the release machinery, do the same builds without
+# publishing (artifacts stay on the workflow run). See docs/RELEASING.md.
 
 on:
+  push:
+    tags: ['v*']
+  pull_request:
+    paths:
+      - .github/workflows/release.yml
+      - scripts/bundle.sh
+      - scripts/latest-json.sh
+      - scripts/check-version.sh
+      - crates/boa-app/bundle/**
   workflow_dispatch:
-    inputs:
-      dmg:
-        description: Also build DMGs
-        type: boolean
-        default: true
 
 concurrency:
-  group: release-build-${{ github.ref }}
-  cancel-in-progress: false
+  group: release-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
   contents: read
@@ -30,21 +33,45 @@ env:
 
 jobs:
   version:
-    name: version
+    name: check version
     runs-on: ubuntu-latest
-    timeout-minutes: 5
     outputs:
       version: ${{ steps.v.outputs.version }}
+      signing: ${{ steps.v.outputs.signing }}
     steps:
       - uses: actions/checkout@v4
       - id: v
+        name: tag and Cargo.toml agree
+        env:
+          ALLOW_UNSIGNED: ${{ vars.ALLOW_UNSIGNED_RELEASES }}
         run: |
-          version=$(scripts/check-version.sh)
+          if [ "$GITHUB_REF_TYPE" = tag ]; then
+            version=$(scripts/check-version.sh "$GITHUB_REF_NAME")
+          else
+            version=$(scripts/check-version.sh)
+          fi
+          # Signing policy: a stable tag (no "-suffix") must be signed with a
+          # Developer ID and notarized, unless the repository variable
+          # ALLOW_UNSIGNED_RELEASES is "true". Pre-release tags, pull requests
+          # and branch runs sign when the secrets exist and are ad-hoc otherwise.
+          signing=optional
+          if [ "$GITHUB_REF_TYPE" = tag ]; then
+            case "$version" in
+              *-*) ;;
+              *) [ "$ALLOW_UNSIGNED" = true ] || signing=required ;;
+            esac
+          fi
           echo "version=$version" >> "$GITHUB_OUTPUT"
-          echo "Boa $version (unsigned build, not published)" >> "$GITHUB_STEP_SUMMARY"
+          echo "signing=$signing" >> "$GITHUB_OUTPUT"
+          echo "Boa $version (signing: $signing)" >> "$GITHUB_STEP_SUMMARY"
 
-  # One job per architecture, both on Apple silicon (the Intel build is a
-  # cross-compile; Intel macOS runners are being retired).
+  # The release commit is pushed with a deploy key (Cut release) or as a tag,
+  # neither of which runs CI on it: run it here and publish only if it passes.
+  ci:
+    name: CI
+    if: github.ref_type == 'tag'
+    uses: ./.github/workflows/ci.yml
+
   app:
     name: Boa.app (${{ matrix.arch }})
     needs: version
@@ -56,11 +83,13 @@ jobs:
         include:
           - target: aarch64-apple-darwin
             arch: aarch64
-          - target: x86_64-apple-darwin
+          - target: x86_64-apple-darwin # cross-compiled on Apple silicon
             arch: x86_64
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
     steps:
       - uses: actions/checkout@v4
-      - name: Rust (rust-toolchain.toml) + target
+      - name: Rust (rust-toolchain.toml)
         run: |
           rustup toolchain install
           rustup target add ${{ matrix.target }}
@@ -69,71 +98,183 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           key: release-${{ matrix.target }}
-          save-if: false
-      - name: no rehearsal key in a release build
+      # bundle.sh signs the update bundle with the Tauri CLI's signer (npx), the
+      # format installed apps (Tauri and GPUI alike) verify.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - name: no rehearsal key
         run: |
           if [ -n "${BOA_UPDATER_PUBKEY:-}" ]; then
-            echo "::error::BOA_UPDATER_PUBKEY is set; release builds must trust the production updater key"
+            echo "::error::BOA_UPDATER_PUBKEY must never be set for a release build."
             exit 1
           fi
-      - name: scripts/bundle.sh
+
+      - name: signing configuration
         env:
-          ARCH: ${{ matrix.arch }}
-          DMG: ${{ inputs.dmg }}
-          BOA_BUILD_COMMIT: ${{ github.sha }}
+          SIGNING: ${{ needs.version.outputs.signing }}
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         run: |
-          args=(--arch "$ARCH" --out out)
-          if [ "$DMG" = true ]; then args+=(--dmg); fi
+          put() { { echo "$1<<__BOA_EOF__"; echo "$2"; echo "__BOA_EOF__"; } >> "$GITHUB_ENV"; }
+          if [ "$SIGNING" = required ]; then
+            for v in APPLE_CERTIFICATE APPLE_CERTIFICATE_PASSWORD APPLE_SIGNING_IDENTITY APPLE_ID APPLE_PASSWORD APPLE_TEAM_ID; do
+              if [ -z "${!v}" ]; then
+                echo "::error::Stable releases must be signed and notarized: secret $v is not set (or set the repository variable ALLOW_UNSIGNED_RELEASES=true; see docs/RELEASING.md)."
+                exit 1
+              fi
+            done
+          fi
+          if [ -n "$APPLE_CERTIFICATE" ] && [ -n "$APPLE_SIGNING_IDENTITY" ]; then
+            echo "::add-mask::$APPLE_SIGNING_IDENTITY"
+            # The Developer ID certificate into a throwaway keychain for codesign.
+            keychain="$RUNNER_TEMP/boa-signing.keychain-db"
+            kc_pass=$(openssl rand -hex 16)
+            echo "$APPLE_CERTIFICATE" | base64 --decode > "$RUNNER_TEMP/cert.p12"
+            security create-keychain -p "$kc_pass" "$keychain"
+            security set-keychain-settings -lut 21600 "$keychain"
+            security unlock-keychain -p "$kc_pass" "$keychain"
+            security import "$RUNNER_TEMP/cert.p12" -P "$APPLE_CERTIFICATE_PASSWORD" -A -t cert -f pkcs12 -k "$keychain"
+            security set-key-partition-list -S apple-tool:,apple: -k "$kc_pass" "$keychain" > /dev/null
+            security list-keychains -d user -s "$keychain" $(security list-keychains -d user | tr -d '"')
+            rm "$RUNNER_TEMP/cert.p12"
+            put APPLE_SIGNING_IDENTITY "$APPLE_SIGNING_IDENTITY"
+            if [ -n "$APPLE_ID" ] && [ -n "$APPLE_PASSWORD" ] && [ -n "$APPLE_TEAM_ID" ]; then
+              put APPLE_ID "$APPLE_ID"
+              put APPLE_PASSWORD "$APPLE_PASSWORD"
+              put APPLE_TEAM_ID "$APPLE_TEAM_ID"
+              echo "NOTARIZE=1" >> "$GITHUB_ENV"
+              echo "Signing with Developer ID and notarizing." | tee -a "$GITHUB_STEP_SUMMARY"
+            else
+              echo "Signing with Developer ID; not notarizing (APPLE_ID/APPLE_PASSWORD/APPLE_TEAM_ID unset)." | tee -a "$GITHUB_STEP_SUMMARY"
+            fi
+          else
+            # Ad-hoc signature: the bundle is sealed, but Gatekeeper still
+            # blocks the downloaded app until its quarantine flag is removed.
+            put APPLE_SIGNING_IDENTITY "-"
+            echo "Unsigned build (ad-hoc signature): see docs/RELEASING.md for the xattr workaround." | tee -a "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: updater signing key
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        # Installed apps update themselves from latest.json, which needs the
+        # .app.tar.gz signed with this key: required for tags.
+        run: |
+          put() { { echo "$1<<__BOA_EOF__"; echo "$2"; echo "__BOA_EOF__"; } >> "$GITHUB_ENV"; }
+          if [ -n "$TAURI_SIGNING_PRIVATE_KEY" ]; then
+            put TAURI_SIGNING_PRIVATE_KEY "$TAURI_SIGNING_PRIVATE_KEY"
+            put TAURI_SIGNING_PRIVATE_KEY_PASSWORD "$TAURI_SIGNING_PRIVATE_KEY_PASSWORD"
+          elif [ "$GITHUB_REF_TYPE" = tag ]; then
+            echo "::error::Secret TAURI_SIGNING_PRIVATE_KEY is not set: installed apps could not update to this release (docs/RELEASING.md)."
+            exit 1
+          else
+            echo "No updater key: building without the update signature." | tee -a "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: scripts/bundle.sh
+        run: |
+          args=(--arch "${{ matrix.arch }}" --dmg --out out)
+          [ "${NOTARIZE:-}" = 1 ] && args+=(--notarize)
           scripts/bundle.sh "${args[@]}"
-          # The binary, for the universal job.
-          mkdir -p bin && cp "target/${{ matrix.target }}/release/boa-app" bin/boa-app
-      - name: check the bundle
+
+      - name: check and collect bundle
         run: |
           app=out/Boa.app
-          v=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$app/Contents/Info.plist")
-          [ "$v" = "${{ needs.version.outputs.version }}" ] || { echo "::error::Info.plist version $v"; exit 1; }
-          codesign --verify --strict --verbose=2 "$app"
-          lipo -info "$app/Contents/MacOS/boa-desktop"
-          rm -rf "$app"
+          plist_version=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$app/Contents/Info.plist")
+          [ "$plist_version" = "$VERSION" ] || { echo "::error::Info.plist version $plist_version != $VERSION"; exit 1; }
+          codesign --verify --deep --strict --verbose=2 "$app"
+          name="Boa_${VERSION}_macos-${{ matrix.arch }}"
+          for f in "$name.dmg" "$name.app.zip" "$name.app.tar.gz"; do
+            [ -f "out/$f" ] || { echo "::error::missing out/$f"; exit 1; }
+          done
+          mkdir -p assets
+          cp "out/$name.dmg" "out/$name.app.zip" "out/$name.app.tar.gz" assets/
+          [ -f "out/$name.app.tar.gz.sig" ] && cp "out/$name.app.tar.gz.sig" assets/
+          ls -l assets
       - uses: actions/upload-artifact@v4
         with:
           name: app-${{ matrix.arch }}
-          path: out/*
-          if-no-files-found: error
-      - uses: actions/upload-artifact@v4
-        with:
-          name: bin-${{ matrix.target }}
-          path: bin/boa-app
+          path: assets/*
           if-no-files-found: error
 
-  universal:
-    name: Boa.app (universal)
-    needs: [version, app]
-    runs-on: macos-15
-    timeout-minutes: 30
+  publish:
+    name: publish GitHub Release
+    if: github.ref_type == 'tag'
+    needs: [version, ci, app]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
-      - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
         with:
-          name: bin-aarch64-apple-darwin
-          path: target/aarch64-apple-darwin/release
-      - uses: actions/download-artifact@v4
-        with:
-          name: bin-x86_64-apple-darwin
-          path: target/x86_64-apple-darwin/release
-      - name: scripts/bundle.sh --arch universal --no-build
+          path: assets
+          merge-multiple: true
+      - name: latest.json (in-app updates)
+        working-directory: assets
         env:
-          DMG: ${{ inputs.dmg }}
+          VERSION: ${{ needs.version.outputs.version }}
+          TAG: ${{ github.ref_name }}
+        # The updater (Tauri builds and the GPUI app alike) reads
+        # releases/latest/download/latest.json: the newest published,
+        # non-prerelease release. The signatures live in it, so the .sig files
+        # are not uploaded.
         run: |
-          chmod +x target/*/release/boa-app
-          args=(--arch universal --no-build --out out)
-          if [ "$DMG" = true ]; then args+=(--dmg); fi
-          scripts/bundle.sh "${args[@]}"
-          lipo -verify_arch arm64 x86_64 out/Boa.app/Contents/MacOS/boa-desktop
-          codesign --verify --strict --verbose=2 out/Boa.app
-          rm -rf out/Boa.app
-      - uses: actions/upload-artifact@v4
-        with:
-          name: app-universal
-          path: out/*
-          if-no-files-found: error
+          base="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/releases/download/$TAG"
+          platforms='{}'
+          for arch in aarch64 x86_64; do
+            tgz="Boa_${VERSION}_macos-$arch.app.tar.gz"
+            [ -f "$tgz" ] && [ -f "$tgz.sig" ] || { echo "::error::missing $tgz or its .sig"; exit 1; }
+            platforms=$(jq --arg k "darwin-$arch" --arg url "$base/$tgz" --rawfile sig "$tgz.sig" \
+              '. + {($k): {url: $url, signature: $sig}}' <<<"$platforms")
+            rm "$tgz.sig"
+          done
+          jq -n --arg version "$VERSION" --arg date "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            --arg notes "${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/releases/tag/$TAG" \
+            --argjson platforms "$platforms" \
+            '{version: $version, notes: $notes, pub_date: $date, platforms: $platforms}' > latest.json
+          cat latest.json
+      - name: checksums
+        working-directory: assets
+        run: |
+          sha256sum -- * > SHA256SUMS
+          cat SHA256SUMS
+      - name: publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+        # A published release is never changed: its assets are what users
+        # downloaded and checked against SHA256SUMS. The assets go into a
+        # draft first, are downloaded back and compared, and only then is the
+        # draft published, so a failed upload never leaves a half-replaced release.
+        run: |
+          while draft=$(gh release view "$TAG" --json isDraft --jq .isDraft 2>/dev/null); do
+            if [ "$draft" != true ]; then
+              echo "::error::Release $TAG is already published; leaving its assets alone. To replace it, delete the release on GitHub and re-run, or cut a new version."
+              exit 1
+            fi
+            echo "Deleting the unpublished draft of $TAG left by an earlier run."
+            gh release delete "$TAG" --yes
+          done
+
+          flags=()
+          case "$TAG" in *-*) flags+=(--prerelease) ;; esac
+          gh release create "$TAG" assets/* --draft --verify-tag --generate-notes \
+            --title "Boa $TAG" "${flags[@]}"
+
+          mkdir uploaded
+          gh release download "$TAG" --dir uploaded
+          diff <(cd assets && sha256sum -- *) <(cd uploaded && sha256sum -- *) || {
+            echo "::error::The draft's assets differ from the built ones; the draft is left unpublished."
+            exit 1
+          }
+
+          gh release edit "$TAG" --draft=false
+          echo "Published ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/releases/tag/$TAG" >> "$GITHUB_STEP_SUMMARY"

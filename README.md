@@ -1,123 +1,84 @@
-<h1 align="center">
-  <img src="crates/boa-desktop/icons/icon.png" alt="Boa" width="64" valign="middle" /> Boa
-</h1>
+# Boa
 
-<p align="center">
-  <a href="https://github.com/sharithg1/boa/releases/latest"><img src="https://img.shields.io/github/v/release/sharithg1/boa?style=flat&color=08C" alt="Latest release" /></a>
-  <img src="https://img.shields.io/badge/macOS%20app%20%C2%B7%20PostgreSQL-4493F8?style=flat" alt="macOS app, PostgreSQL" />
-  <img src="https://img.shields.io/badge/built%20with-Rust%20%2B%20Tauri-orange?style=flat" alt="Built with Rust and Tauri" />
-</p>
+A fast, native PostgreSQL client for macOS: a Database Explorer tree, SQL
+consoles with completion, an editable data grid, query history, CSV export and
+guard rails for production, in one small Rust app.
 
-<p align="center">
-  <strong>A fast, native database client for your Mac.</strong><br/>
-  Browse schemas, write SQL, edit rows and export results,<br/>
-  in a small, quick Rust app that is careful with production.
-</p>
+This repository is Boa rebuilt on [GPUI](https://gpui.rs/) and
+[gpui-component](https://github.com/longbridge/gpui-component), in pure Rust.
+It replaces the Tauri 2 + React app (`dbclient`), whose behaviour is the spec,
+and keeps its users' data where it is: same bundle id (`dev.boa.desktop`),
+same config dir, same `connections.json` and history files.
 
-<h3 align="center"><a href="https://github.com/sharithg1/boa/releases/latest"><ins>Download Boa</ins></a></h3>
+- How every feature behaves: [docs/USAGE.md](docs/USAGE.md) (with the
+  differences from the Tauri app at the end).
+- Port plan, parity checklist and progress log: [HANDOFF-PARITY.md](HANDOFF-PARITY.md);
+  gap list: [docs/parity-audit.md](docs/parity-audit.md); what only a person
+  can check: [docs/MANUAL-CHECKS.md](docs/MANUAL-CHECKS.md).
 
-<p align="center">
-  <img width="960" alt="Boa with a console on a production Postgres database and its result grid" src="docs/images/boa.png" />
-</p>
+## Build and run
 
-## Why Boa
+Needs macOS 11+ (Apple silicon or Intel) with the Xcode Command Line Tools, and
+Rust through rustup (`rust-toolchain.toml` pins the version).
 
-The big database IDEs do everything, but they are heavy JVM apps that take a
-while to start and want a project before you can run a query. Boa keeps the
-parts you use every day (the explorer tree, consoles, an editable data grid,
-query history) in a native app built with Rust and Tauri. It also puts guard
-rails where mistakes are expensive: production connections are marked
-everywhere, transactions are visible, and destructive statements ask first.
+```sh
+export PATH="$HOME/.cargo/bin:$PATH"     # if cargo isn't on PATH
+mkdir -p ~/boa-dev-config
+BOA_CONFIG_DIR=~/boa-dev-config cargo run -p boa-app
+```
 
-## Features
+**Use `BOA_CONFIG_DIR` for every development run.** Without it Boa uses the
+real config dir, `~/Library/Application Support/dev.boa.desktop/`, which
+holds your saved connections (with passwords), history, prefs and session,
+shared with an installed Boa.app. With `BOA_CONFIG_DIR` set, the one-time
+import of the Tauri app's localStorage looks only in `BOA_IMPORT_HOME` (a
+home dir; unset: no import), so a dev run never reads your real WebKit data
+either.
 
-### Explore your schema
-A Database Explorer tree (connection › database › schema › tables ›
-columns), with row counts, showing only the databases and schemas you pick.
-Keys, foreign keys, indexes and checks sit under each table, and the DDL
-view is the server's own definition. Paste a `postgresql://` URL to add a
-data source, and reach private servers through an SSH tunnel that uses your
-`~/.ssh/config` and agent.
-
-### SQL consoles
-Syntax highlighting, context-aware completion from the live schema (tables,
-columns, aliases, CTEs, types), and <kbd>⌘↵</kbd> to run the statement under
-the caret. Results land in a paged grid with column types.
-
-### Filter and sort any table
-Type a `WHERE` condition or an `ORDER BY` above the grid, or click a column
-header to sort. It runs in the query, so it covers every row, not just the
-loaded page, and CSV export follows it.
-
-### Edit data like a spreadsheet
-Edit cells, add and delete rows in any table with a primary key. Changes are
-staged until you submit, the preview shows the exact SQL, and everything runs
-in one transaction that rolls back on any error.
-
-### Guard rails for production
-Tag a connection Production and give it a colour, shown on the explorer, the
-editor and the status bar. `UPDATE` / `DELETE` without `WHERE`, `DROP` and
-`TRUNCATE` ask for confirmation, and read-only connections are enforced by
-the server.
-
-### Transactions you can see
-Switch any session between auto-commit and manual mode. The real transaction
-state (idle, open, aborted) is always shown, and Boa asks before
-disconnecting or quitting with one open.
-
-### Query history
-The queries you run are saved per connection for 30 days (configurable),
-failures included; re-running one with other values updates its entry. Search
-it as you type (<kbd>⌘⌥E</kbd>), then insert a statement into a console or
-open it in a new one.
-
-### Copy as
-Select cells or whole rows and copy them as TSV, CSV, Markdown, JSON, SQL
-`INSERT` / `UPDATE` statements or an `IN (…)` list.
-
-### CSV export
-Export the whole result, not just the loaded page. Postgres streams it with
-`COPY`, with progress and cancel in the status bar.
-
-### Picks up where you left off
-Tabs, their SQL, the active tab and the panel layout come back on launch.
-
-### Updates itself
-New releases download in the background; one click on **Restart to
-update** installs them.
-
-The details of each feature are in [docs/USAGE.md](docs/USAGE.md).
-
-## Supported databases
-
-**PostgreSQL** today.
-
-## Install
-
-1. Download the `.dmg` for your Mac (Apple silicon or Intel) from the
-   [latest release](https://github.com/sharithg1/boa/releases/latest) and
-   drag Boa to Applications.
-2. If macOS says the app cannot be opened (unsigned builds), run once:
-
-   ```sh
-   xattr -dr com.apple.quarantine /Applications/Boa.app
-   ```
-
-3. Open Boa, press <kbd>⌘O</kbd> and add a data source.
-
-After that, Boa keeps itself up to date.
-
-## How it works
-
-Boa is a Tauri app. The Rust side owns the database sessions: it connects
-with `tokio-postgres`, introspects schemas, runs statements through a
-server-side cursor so large results page in, and probes the transaction
-state after every statement. The UI is React in the system WebView, so the
-app stays small. Connections and query history are stored in the app's
-config directory.
-
-## Development
-
-Building from source, the layout, checks and the browser mock: see
-[docs/DEVELOPMENT.md](docs/DEVELOPMENT.md). Releases:
+Release builds and the `.app` bundle: `scripts/bundle.sh`, see
 [docs/RELEASING.md](docs/RELEASING.md).
+
+## Test
+
+```sh
+cargo fmt --all --check
+cargo clippy --workspace --all-targets -- -D warnings
+PGHOST=localhost PGPORT=5432 PGUSER=boa PGPASSWORD=boa PGDATABASE=boa_dev cargo test --workspace
+```
+
+Without `PGHOST` the live Postgres tests skip. The local Postgres setup, the
+fixtures (`scripts/dev-fixtures.sh`), the dev hooks and the screenshot feature
+are in [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md).
+
+## Your data, and moving from the Tauri app
+
+| File in the config dir | Holds |
+|---|---|
+| `connections.json` | data sources and passwords (plain text, owner-only), same format as the Tauri app |
+| `history-<connection id>.jsonl` | query history, same format |
+| `prefs.json`, `session.json`, `csv-export.json` | what the Tauri app kept in WebView localStorage (`boa.prefs.v2`, `boa.session.v1`, `boa.csvExport`), same fields |
+
+On first launch Boa imports those three from the Tauri app's localStorage
+once. The Tauri app can still be used afterwards: it reads the connections
+and history Boa writes (checked by `crates/boa-app/src/tests/migration.rs`).
+Details in [docs/USAGE.md](docs/USAGE.md#where-your-data-lives).
+
+## Architecture
+
+```
+crates/boa-core/   no UI: Postgres sessions (one operation at a time per session),
+                   introspection and DDL, CSV export (COPY), transactions, saved
+                   connections, history, SSH tunnels, the async Backend bridge, and
+                   the Tauri UI's pure logic ported from TypeScript (sql/, grid/, state/)
+crates/boa-app/    the GPUI app: models (GPUI entities replacing the zustand store),
+                   views (one per React component), actions + keymap, theme, menus,
+                   the in-app updater
+```
+
+Start with [crates/boa-core/README.md](crates/boa-core/README.md) (Backend
+API, events, module layout) and [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md).
+
+## Licence
+
+MIT. Dependencies are MIT / Apache-2.0 / BSD / ISC / Zlib / Unicode / OFL, or
+MPL-2.0 unmodified, enforced by `cargo deny` (`deny.toml`); no GPL.

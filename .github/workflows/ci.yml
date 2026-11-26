@@ -5,8 +5,6 @@ on:
   push:
     branches: [main]
   workflow_dispatch:
-  # The Release workflow runs CI on the release commit before publishing.
-  workflow_call:
 
 concurrency:
   group: ci-${{ github.ref }}
@@ -19,59 +17,109 @@ env:
   CARGO_TERM_COLOR: always
   CARGO_INCREMENTAL: 0
   RUST_BACKTRACE: 1
+  # Boa supports macOS 11+; build C dependencies (bundled SQLite) and link for it.
+  MACOSX_DEPLOYMENT_TARGET: "11.0"
 
 jobs:
   fmt:
-    name: rustfmt + version check
+    name: rustfmt
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
-      - name: Cargo.toml and tauri.conf.json versions agree
-        run: scripts/check-version.sh
       - name: Rust (rust-toolchain.toml)
         run: rustup toolchain install
       - run: cargo fmt --all --check
 
-  # The Tauri desktop crate is the whole workspace and only ships for macOS
-  # (Tauri on Linux would need webkit2gtk). The Postgres integration tests
-  # skip themselves without PGHOST.
-  rust-macos:
-    name: clippy + test (macOS)
-    runs-on: macos-latest
+  # Licences of every dependency on the macOS targets (deny.toml): no GPL /
+  # AGPL / LGPL. cargo-deny only reads cargo metadata, so Linux is fine.
+  deny:
+    name: cargo deny (licences)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Rust (rust-toolchain.toml)
+        run: rustup toolchain install
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-deny@0.22
+      - run: cargo deny --locked check licenses
+
+  # Apple silicon: clippy and the full test suite, including the live Postgres
+  # tests. Service containers don't run on macOS runners, so Postgres 17 comes
+  # from Homebrew, set up like the local dev server (role boa/boa, superuser;
+  # TCP needs the password) and loaded with scripts/dev-fixtures.sh.
+  macos-arm64:
+    name: clippy + test (macOS arm64)
+    runs-on: macos-15
+    timeout-minutes: 60
+    env:
+      PGHOST: localhost
+      PGPORT: "5432"
+      PGUSER: boa
+      PGPASSWORD: boa
+      PGDATABASE: boa_dev
     steps:
       - uses: actions/checkout@v4
       - name: Rust (rust-toolchain.toml)
         run: rustup toolchain install
       - uses: Swatinem/rust-cache@v2
-      - uses: taiki-e/install-action@v2
         with:
-          tool: nextest@0.9
+          key: aarch64-apple-darwin
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      - name: Postgres 17 (Homebrew)
+        env:
+          HOMEBREW_NO_AUTO_UPDATE: "1"
+          HOMEBREW_NO_INSTALL_CLEANUP: "1"
+          HOMEBREW_NO_INSTALLED_DEPENDENTS_CHECK: "1"
+        run: |
+          brew install postgresql@17
+          pgbin="$(brew --prefix postgresql@17)/bin"
+          echo "$pgbin" >> "$GITHUB_PATH"
+          pgdata="$RUNNER_TEMP/pgdata"
+          printf 'boa\n' > "$RUNNER_TEMP/pg-pw"
+          "$pgbin/initdb" -D "$pgdata" -U boa --pwfile="$RUNNER_TEMP/pg-pw" \
+            --auth-local=trust --auth-host=scram-sha-256 -E UTF8 --locale=en_US.UTF-8
+          "$pgbin/pg_ctl" -D "$pgdata" -l "$RUNNER_TEMP/postgres.log" -o "-p $PGPORT" -w start
+          "$pgbin/psql" -X -d postgres -Atc 'select version()'
+      - name: Fixtures (scripts/dev-fixtures.sh)
+        run: scripts/dev-fixtures.sh
+
       - name: clippy
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      - name: clippy (all features, incl. screenshot)
         run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
       - name: test
-        id: test
-        run: cargo nextest run --profile ci --workspace --all-features --locked
-      - name: doctests
-        if: ${{ !cancelled() && (steps.test.outcome == 'success' || steps.test.outcome == 'failure') }}
-        run: cargo test --doc --workspace --all-features --locked
+        run: cargo test --workspace --locked
+      - name: Postgres log
+        if: failure()
+        run: cat "$RUNNER_TEMP/postgres.log" || true
 
-  ui:
-    name: desktop UI (typecheck, lint, test)
-    runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: crates/boa-desktop/ui
+  # Intel: cross-compiled on the arm64 runner (Intel macOS runners are being
+  # retired). Building every target proves the x86_64 build links; when the
+  # runner has Rosetta 2 the tests also run (no PGHOST: live tests skip).
+  macos-x86_64:
+    name: build (macOS x86_64)
+    runs-on: macos-15
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
-      - uses: pnpm/action-setup@v4
+      - name: Rust (rust-toolchain.toml) + x86_64 target
+        run: |
+          rustup toolchain install
+          rustup target add x86_64-apple-darwin
+      - uses: Swatinem/rust-cache@v2
         with:
-          version: 11.18.0
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 24
-          cache: pnpm
-          cache-dependency-path: crates/boa-desktop/ui/pnpm-lock.yaml
-      - run: pnpm install --frozen-lockfile
-      - run: pnpm typecheck
-      - run: pnpm lint
-      - run: pnpm test
+          key: x86_64-apple-darwin
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - name: build (all targets)
+        run: cargo build --workspace --all-targets --locked --target x86_64-apple-darwin
+      - name: test (Rosetta 2, when available)
+        run: |
+          if arch -x86_64 /usr/bin/true 2>/dev/null; then
+            cargo test --workspace --locked --target x86_64-apple-darwin
+          else
+            echo "::notice::Rosetta 2 not available on this runner: x86_64 build only"
+          fi

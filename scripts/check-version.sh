@@ -1,48 +1,25 @@
 #!/usr/bin/env bash
-# Check that every file carrying the release version agrees, and optionally
-# that it matches a tag.
+# Print the release version ([workspace.package] version in the root
+# Cargo.toml), and optionally check that it matches a tag.
 #
-#   scripts/check-version.sh            # Cargo.toml == tauri.conf.json; prints the version
-#   scripts/check-version.sh v0.1.5     # ... and both == 0.1.5 (leading "v" optional)
+#   scripts/check-version.sh            # prints the version
+#   scripts/check-version.sh v0.7.0     # ... and fails unless it is 0.7.0 (leading "v" optional)
 #
-# The workspace version (Cargo.toml [workspace.package], inherited by the
-# desktop crate) and the app bundle version (tauri.conf.json) must match.
-# Used by scripts/release.sh and the release workflow.
+# The GPUI app has one version source (the Tauri app also had
+# tauri.conf.json); Info.plist gets it from scripts/bundle.sh.
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
 
-# `version = "…"` inside [workspace.package] of the root Cargo.toml.
-cargo_version() {
-    awk '
-        /^\[/ { in_pkg = ($0 == "[workspace.package]") }
-        in_pkg && /^version[ \t]*=/ {
-            v = $0; sub(/^[^"]*"/, "", v); sub(/".*$/, "", v); print v; exit
-        }
-    ' Cargo.toml
-}
-
-# Top-level "version" of tauri.conf.json (two-space indented key).
-tauri_version() {
-    sed -n 's/^  "version": *"\([^"]*\)".*/\1/p' crates/boa-desktop/tauri.conf.json | head -n1
-}
-
-cv=$(cargo_version)
-tv=$(tauri_version)
-status=0
-[ -n "$cv" ] || { echo "error: no version in Cargo.toml [workspace.package]" >&2; status=1; }
-[ -n "$tv" ] || { echo "error: no version in crates/boa-desktop/tauri.conf.json" >&2; status=1; }
-if [ "$status" = 0 ] && [ "$cv" != "$tv" ]; then
-    echo "error: Cargo.toml version $cv != tauri.conf.json version $tv" >&2
-    status=1
+version=$(awk '
+    /^\[/ { in_pkg = ($0 == "[workspace.package]") }
+    in_pkg && /^version[ \t]*=/ {
+        v = $0; sub(/^[^"]*"/, "", v); sub(/".*$/, "", v); print v; exit
+    }
+' Cargo.toml)
+[ -n "$version" ] || { echo "error: no version in Cargo.toml [workspace.package]" >&2; exit 1; }
+if [ $# -gt 0 ] && [ "$version" != "${1#v}" ]; then
+    echo "error: tag $1 does not match Cargo.toml ($version)" >&2
+    exit 1
 fi
-if [ $# -gt 0 ]; then
-    want=${1#v}
-    if [ "$cv" != "$want" ] || [ "$tv" != "$want" ]; then
-        echo "error: tag $1 does not match Cargo.toml ($cv) / tauri.conf.json ($tv);" \
-            "run scripts/release.sh $want and tag that commit" >&2
-        status=1
-    fi
-fi
-[ "$status" = 0 ] || exit 1
-echo "$cv"
+echo "$version"

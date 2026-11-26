@@ -1,7 +1,13 @@
 # Using Boa
 
-How each part of Boa behaves, in detail. For what it is and how to install
-it, see the [README](../README.md).
+How each part of Boa behaves, in detail. For what it is and how to build it,
+see the [README](../README.md).
+
+This is the GPUI app's copy of the Tauri app's `docs/USAGE.md` (source commit
+`61984bb`), which is the behaviour spec of the port. The text below is true of
+this app; where it intentionally differs from the Tauri app, or where a gap is
+still open, [Differences from the Tauri app](#differences-from-the-tauri-app)
+at the end says so.
 
 ## Layout
 
@@ -68,8 +74,8 @@ host name, not the tunnel's `127.0.0.1`.
 ## Editing table data
 
 Table data is editable like DataGrip's data editor, for tables with a
-primary key (views, key-less tables and console results stay read-only and
-say why). Double-click, Enter or start typing to edit a cell (⇧↵ opens a
+primary key (views and key-less tables stay read-only and say why; console
+results are read-only). Double-click, Enter or start typing to edit a cell (⇧↵ opens a
 larger editor for long text / JSON), ⌘⌥N sets NULL (not the same as an
 empty string), ⌘N adds a row (untouched columns are left out of the
 `INSERT`, so defaults apply), ⌘⌫ deletes the row, ⌘⌥Z reverts; also from the
@@ -200,9 +206,10 @@ Updates…** checks right away, and **Boa → About Boa** shows the version
 On launch Boa reopens the last session: the open tabs, each console's SQL,
 each table tab's filter and sort, the active tab and the panel layout.
 It reconnects every data source that was connected at quit (the selected
-one first; the others skip a password prompt), retrying for about half a
-minute while the server can't be reached (VPN not up yet, network still
-coming back).
+one first; the others skip a password prompt), retrying with growing delays
+(1 s up to 30 s) for about two minutes while the server can't be reached
+(VPN not up yet, network still coming back), then showing it as *failed*
+with a Retry toast. Results are not kept: no statement is re-run at launch.
 
 ## Staying connected
 
@@ -223,3 +230,57 @@ A connected data source stays connected until you disconnect it:
   run the next statement as if the transaction were still there.
 - **Acting on a closed data source** connects it first: running a statement,
   selecting one of its databases, or the **Connect** button on its table tabs.
+
+## Where your data lives
+
+Everything is in the app config dir, `~/Library/Application Support/dev.boa.desktop/`,
+the same directory the Tauri app used:
+
+| File | What | Shared with the Tauri app |
+|---|---|---|
+| `connections.json` | saved data sources, with their passwords in plain text (owner-only, 0600) | yes, same format |
+| `history-<connection id>.jsonl` | query history, one JSON object per line (owner-only) | yes, same format |
+| `prefs.json` | Settings and layout (sizes, explorer state, scopes): the Tauri app's `boa.prefs.v2` | no: the Tauri app kept it in WebView localStorage |
+| `session.json` | the last session (tabs, SQL, filters, panels, connections to reopen): `boa.session.v1` | no: localStorage |
+| `csv-export.json` | CSV delimiter and header options: `boa.csvExport` | no: localStorage |
+| `.localstorage-imported` | marks that the one-time import below has run | — |
+
+**Moving over from the Tauri app.** On its first launch on a config dir, Boa
+imports the Tauri app's preferences, session and CSV options once from
+WebKit's localStorage (`~/Library/WebKit/dev.boa.desktop/WebsiteData/Default/…/localstorage.sqlite3`,
+read from a copy; the original is never opened). Each file is imported only
+if it doesn't exist yet, the JSON is kept exactly as the Tauri app stored it,
+and nothing that goes wrong stops the app from starting. Connections,
+passwords and history need no import: they are already in the config dir.
+
+**Going back to the Tauri app** works: it reads `connections.json` and the
+history files as Boa leaves them. It doesn't read `prefs.json` /
+`session.json` / `csv-export.json`, though: it finds its own localStorage
+as it was when Boa imported it, so Settings, tabs and CSV options changed in
+Boa since then don't carry back.
+
+## Differences from the Tauri app
+
+Intentional (kept on purpose, or harmless additions):
+
+- **Prefs, session and CSV options are JSON files** in the config dir instead
+  of WebView localStorage (above), with the same fields and values.
+- **Extra menu items:** the connection's right-click menu also has *New query
+  console*, *Refresh* and *Delete…*; a table's also has *Copy name* and
+  *Refresh*; the app menu also has *Settings…* (⌘,) and *Show All*.
+- **Extra keys:** PgUp / PgDn move the selected cell by a screen of rows
+  in result grids (the Tauri app leaves them to the web view, which only
+  scrolls the grid).
+- **CSV export save panel:** opens in the folder of the last export (else
+  `~/Downloads`) and has no file-type filter.
+- **Development overrides** (never set them for daily use):
+  `BOA_CONFIG_DIR=<dir>` uses another config dir, and with it
+  `BOA_IMPORT_HOME=<dir>` is the home dir the one-time import looks in
+  (without it, nothing is imported). See [DEVELOPMENT.md](DEVELOPMENT.md).
+
+Known gaps (2026-11-26, after waves 4–5), tracked in
+[parity-audit.md](parity-audit.md) and HANDOFF-PARITY.md §13:
+
+- **Updates** are checked against `BOA_UPDATE_ENDPOINT` (or the release
+  feed in release builds); a real signed release has not been installed
+  through it yet (see RELEASING.md).

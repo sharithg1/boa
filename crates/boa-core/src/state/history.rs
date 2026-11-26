@@ -216,6 +216,24 @@ pub fn query_key(sql: &str) -> String {
     restore_quoted(trimmed, &quoted)
 }
 
+/// Transaction control on its own (`BEGIN`, `START TRANSACTION`, `COMMIT`,
+/// `END`, `ROLLBACK`, `ABORT`, `SAVEPOINT`, `RELEASE`, with their
+/// options): kept out of the history, which is for queries worth running
+/// again. A script that does more than that is kept. The Output log still
+/// shows them.
+pub fn is_transaction_control(sql: &str) -> bool {
+    let key = query_key(sql);
+    if key.contains(';') {
+        return false;
+    }
+    let mut words = key.split(' ');
+    match words.next() {
+        Some("begin" | "commit" | "end" | "rollback" | "abort" | "savepoint" | "release") => true,
+        Some("start") => words.next() == Some("transaction"),
+        _ => false,
+    }
+}
+
 /// A record's key (computed for records saved before keys were). (`recordKey`)
 pub fn record_key(r: &Entry) -> Cow<'_, str> {
     match &r.key {
@@ -699,7 +717,8 @@ impl QueryHistory {
     }
 
     /// Saves a statement the user ran (not page re-fetches) to its
-    /// connection's history, unless recording is off (`None`). The record
+    /// connection's history, unless recording is off or it is only
+    /// transaction control ([`is_transaction_control`]) (`None`). The record
     /// gets a new id. (`recordHistory`)
     pub fn record(
         &mut self,
@@ -720,7 +739,7 @@ impl QueryHistory {
         now_ms: f64,
         id: String,
     ) -> Option<RecordPlan> {
-        if !prefs.record {
+        if !prefs.record || is_transaction_control(&entry.sql) {
             return None;
         }
         let rec = to_record(entry, id);
@@ -799,12 +818,15 @@ impl QueryHistory {
         match result {
             Ok(list) => {
                 let newest_first: Vec<Entry> = list.iter().rev().cloned().collect();
-                let merged = merge_loaded(
+                let mut merged = merge_loaded(
                     &newest_first,
                     &pending,
                     HISTORY_CAP,
                     history_cutoff(days, now_ms),
                 );
+                // Saved before transaction control was left out: dropped
+                // from the file too.
+                merged.retain(|r| !is_transaction_control(&r.sql));
                 let kept: HashSet<&str> = merged.iter().map(|r| r.id.as_str()).collect();
                 let stale = list
                     .iter()
@@ -1453,6 +1475,59 @@ mod tests {
                 .list(id)
                 .map(|l| l.iter().map(|r| r.sql.clone()).collect())
         }
+    }
+
+    #[test]
+    fn tells_transaction_control_apart() {
+        for sql in [
+            "BEGIN",
+            "begin;",
+            "BEGIN ISOLATION LEVEL SERIALIZABLE",
+            "start transaction read only",
+            "COMMIT",
+            "commit and chain;",
+            "END",
+            "ROLLBACK",
+            "rollback to savepoint a",
+            "ABORT",
+            "SAVEPOINT a",
+            "release savepoint a",
+            "-- done\nCOMMIT ;",
+        ] {
+            assert!(is_transaction_control(sql), "{sql}");
+        }
+        for sql in [
+            "select 1",
+            "begin; update t set a = 1; commit;",
+            "do $$ begin perform 1; end $$",
+            "select 'commit'",
+            "start_x",
+            "update t set a = 1 /* commit */",
+        ] {
+            assert!(!is_transaction_control(sql), "{sql}");
+        }
+    }
+
+    #[test]
+    fn leaves_out_transaction_control_and_drops_saved_ones() {
+        let mut t = Harness::new();
+        // Saved by an earlier version.
+        t.disk.0.insert(
+            "c1".into(),
+            vec![
+                rec("b", "BEGIN", T0 - 3.0),
+                rec("u", "update t set a = 1", T0 - 2.0),
+                rec("c", "COMMIT", T0 - 1.0),
+            ],
+        );
+        t.load("c1", false);
+        assert_eq!(t.sqls("c1").unwrap(), ["update t set a = 1"]);
+        assert_eq!(t.disk.sqls("c1"), ["update t set a = 1"]);
+        t.record("c1", "begin", 1.0);
+        t.record("c1", "select a", 2.0);
+        t.record("c1", "ROLLBACK", 3.0);
+        assert_eq!(t.sqls("c1").unwrap(), ["select a", "update t set a = 1"]);
+        assert_eq!(t.disk.sqls("c1"), ["update t set a = 1", "select a"]);
     }
 
     #[test]

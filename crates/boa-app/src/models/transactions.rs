@@ -12,7 +12,7 @@
 //! transaction open is reported as [`TransactionsEvent::TxLost`].
 //!
 //! Commit / rollback ([`Transactions::end`]) run `COMMIT` / `ROLLBACK` like a
-//! typed statement (logged in the Output log and the history); the mode
+//! typed statement (logged in the Output log; the history leaves them out); the mode
 //! switch with its "leave Manual with a transaction open" prompt and the
 //! shortcuts are in `views::tx_controls`, the quit / disconnect guards in
 //! `views::guard_dialogs`.
@@ -266,7 +266,7 @@ impl Transactions {
     /// Ends the session's transaction (`endTransaction`): runs `COMMIT` or
     /// `ROLLBACK` like a typed statement of `console` (the active console of
     /// the database, if any: it shows as running, a failure in its strip),
-    /// logged in the Output log and the history. Resolves true when the
+    /// logged in the Output log (not the history). Resolves true when the
     /// session is idle afterwards. Nothing while `console` runs a statement
     /// or another COMMIT / ROLLBACK of the session is in flight.
     pub fn end(

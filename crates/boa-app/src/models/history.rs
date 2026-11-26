@@ -6,7 +6,8 @@
 //!
 //! - every console run and failure is recorded from
 //!   [`WorkspacesEvent::OutputLogged`] (`record: true`; page re-fetches are
-//!   not), unless prefs `recordHistory` is off; runs past `historyDays` and
+//!   not; nor is transaction control: `BEGIN`, `COMMIT`, …), unless prefs
+//!   `recordHistory` is off; runs past `historyDays` and
 //!   the oldest past 5,000 drop out; a query run again replaces its entry;
 //! - lists load lazily (the first time a view needs a connection) and then
 //!   follow new runs in memory; a new retention period re-reads them;

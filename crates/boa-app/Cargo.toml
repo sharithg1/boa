@@ -1,0 +1,81 @@
+[package]
+name = "boa-app"
+description = "Boa: a PostgreSQL client for macOS (GPUI app)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+build = "build.rs"
+
+[[bin]]
+name = "boa-app"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = "1"
+boa-core = { path = "../boa-core" }
+# Local time of day in the Output log (MIT / Apache-2.0).
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
+# oneshot channels for the Connections model's waiters, mpsc for platform events.
+futures = "0.3"
+gpui.workspace = true
+gpui_platform.workspace = true
+gpui-component.workspace = true
+gpui-component-assets.workspace = true
+lsp-types = "0.97"
+# src/updater/: the in-app updater (and models/updates.rs, its only HTTP use),
+# with the stack tauri-plugin-updater used, so both apps fetch, verify and
+# unpack the same release feed the same way.
+# base64 / minisign-verify (MIT): the update signature; reqwest blocking +
+# rustls/ring + the macOS trust store (MIT / Apache-2.0 / ISC); tar + flate2
+# (MIT / Apache-2.0): the .app.tar.gz; tempfile (MIT / Apache-2.0): staging.
+base64 = "0.22"
+flate2 = "1"
+minisign-verify = "0.3"
+reqwest = { version = "0.13", default-features = false, features = ["blocking", "rustls-no-provider", "system-proxy"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
+tar = "0.4"
+tempfile = "3"
+rust-embed = { version = "8", features = ["include-exclude"] }
+serde.workspace = true
+serde_json.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+
+# src/platform/: macOS wake (NSWorkspace) and network-change (SystemConfiguration)
+# notifications for the reconnect loop; terminate.rs: the Dock / logout quit guard
+# (NSApplication). All MIT / Apache-2.0; already in the tree
+# through gpui (objc2 family) and boa-core's deps (system-configuration).
+[target.'cfg(target_os = "macos")'.dependencies]
+# src/updater/install.rs: renameat_with(RENAME_SWAP) swaps the .app bundles (Apache-2.0 / MIT).
+rustix = { version = "1", features = ["fs"] }
+block2 = "0.6"
+core-foundation = "0.9"
+objc2 = "0.6"
+objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSApplication", "NSResponder", "NSWorkspace"] }
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "block2", "NSNotification", "NSObject", "NSOperation", "NSString"] }
+system-configuration = "0.6"
+
+# Only for the `screenshot` feature (see app.rs).
+image = { version = "0.25", default-features = false, features = ["png"], optional = true }
+
+[features]
+# Environment-driven development hooks (grid/dev.rs: BOA_GRID_*, the editor's
+# BOA_EDITOR_*, views/dev.rs: BOA_DEV_*). Never in release builds.
+dev-hooks = []
+# BOA_SCREENSHOT=out.png renders the main window's first frames to a PNG and
+# quits (GPUI's render_to_image, which needs its test-support feature). For
+# checking the UI from scripts/agents without Screen Recording permission.
+# Native parts (traffic lights, menus) are not in the image. Implies dev-hooks
+# so the state can be scripted before the capture.
+screenshot = ["dev-hooks", "dep:image", "gpui/test-support", "gpui_platform/test-support"]
+
+[dev-dependencies]
+gpui = { workspace = true, features = ["test-support"] }
+# tests/migration.rs: a WebKit localStorage database (already in the tree through boa-core).
+rusqlite = "0.40"
+
+[lints]
+workspace = true

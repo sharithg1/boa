@@ -1,11 +1,11 @@
 [workspace]
 resolver = "3"
-members = ["crates/boa-desktop"]
+members = ["crates/*"]
 
 [workspace.package]
-version = "0.6.2"
+version = "0.6.1"
 edition = "2024"
-rust-version = "1.85"
+rust-version = "1.88"
 license = "MIT"
 publish = false
 
@@ -14,11 +14,16 @@ serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter", "fmt"] }
-tauri = { version = "2.12.4", features = [] }
-tauri-build = { version = "2.7.3", features = [] }
-tauri-plugin-dialog = "=2.7.3"
-# In-app updates (src/updater.rs).
-tauri-plugin-updater = "2.14.0"
+# GPUI comes from the `gpui-pre-*` crates.io snapshots of Zed's crates (this one
+# is zed@f126950), the same exact pin gpui-component 0.11.0 is built against.
+# Bump gpui, gpui_platform and gpui-component together, and only on purpose:
+# every snapshot may change GPUI's API. See docs/phase0/widgets.md.
+gpui = { package = "gpui-pre", version = "=0.3.14" }
+# runtime_shaders: compile the Metal shaders at run time, so building needs only
+# the Command Line Tools (no full Xcode / `metal` compiler).
+gpui_platform = { package = "gpui-pre-platform", version = "=0.3.14", default-features = false, features = ["font-kit", "runtime_shaders"] }
+gpui-component = { version = "=0.11.0", default-features = false }
+gpui-component-assets = { package = "gpui-kit-assets", version = "=0.11.0" }
 
 [workspace.lints.rust]
 unsafe_code = "deny"

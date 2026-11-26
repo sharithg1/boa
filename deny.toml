@@ -1,0 +1,38 @@
+# cargo-deny configuration: `cargo deny check licenses` (run in CI).
+# https://embarkstudios.github.io/cargo-deny/
+#
+# Boa is MIT. Dependencies must be under permissive licences (or MPL-2.0, used
+# unmodified). GPL / AGPL / LGPL must fail: they are simply not in the allow
+# list. Don't add them to make a check pass; replace the dependency instead.
+
+[graph]
+# Boa only ships for macOS. Restricting the graph to the two Mac targets keeps
+# Windows / Linux-only crates (and their licences) out of the check.
+targets = ["aarch64-apple-darwin", "x86_64-apple-darwin"]
+all-features = true
+
+[licenses]
+# A crate's licence expression must be satisfiable using only these.
+allow = [
+    "0BSD",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "BSL-1.0",
+    "CC0-1.0",
+    "ISC",
+    "MIT",
+    "MPL-2.0",
+    "OFL-1.1",
+    "Unicode-3.0",
+    "Unicode-DFS-2016",
+    "Zlib",
+]
+confidence-threshold = 0.93
+# Listed for completeness; an allow entry nothing uses is not an error.
+unused-allowed-license = "allow"
+
+# Our own crates are `publish = false` and MIT.
+[licenses.private]
+ignore = true

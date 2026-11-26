@@ -1,6 +1,6 @@
 # Releasing Boa (GPUI)
 
-Status: **prepared, not published.** The build scripts, the in-app updater and a
+Status: **ready to cut through Actions → Cut release** (below); nothing published by the port itself. The build scripts, the in-app updater and a
 manual-only CI build exist and were rehearsed locally (below). Nothing has been
 signed with a Developer ID or the real updater key, no tag or GitHub release
 exists. Every step that needs a credential is listed in
@@ -15,8 +15,8 @@ model: a `vX.Y.Z` GitHub release with per-arch DMGs / zips, the update tarballs,
 One source: `[workspace.package] version` in the root `Cargo.toml`
 (`scripts/check-version.sh [vX.Y.Z]` prints / checks it). `scripts/bundle.sh`
 writes it into Info.plist (`CFBundleShortVersionString` = `CFBundleVersion`).
-The Tauri app's `scripts/release.sh` (bump + commit + tag) is not ported yet;
-bump the version by hand and run `cargo update --workspace --offline`.
+`scripts/release.sh X.Y.Z` bumps it (and Cargo.lock), commits and tags; the
+Cut release workflow runs it for you (below).
 
 **The first GPUI release must be newer than every published Tauri release**, or
 installed Tauri apps will not offer it. The source repo is at 0.6.1 (tag
@@ -182,13 +182,35 @@ relaunch, and a Tauri build with the *real* key (needs the private key).
   DMG mounts with `Boa.app` + `Applications`, the app in it verifies;
   `shasum -c SHA256SUMS` passes.
 
-## CI: `.github/workflows/release.yml`
+## Cutting a release (CI)
 
-`workflow_dispatch` only (never on push / tag / PR). Builds each arch with
-`scripts/bundle.sh --arch <arch> [--dmg]` on `macos-15`, then the universal
-bundle from both binaries (`--no-build`), ad-hoc signed, and keeps everything
-as workflow artifacts. No secrets are read; nothing is published. Not run yet.
-`ci.yml` (fmt, clippy, tests with Postgres, cargo deny, x86_64 build) is unchanged.
+As with the Tauri app: **Actions → Cut release → Run workflow** on `main`, pick
+patch / minor / major (or type an exact version; the first GPUI release must be
+newer than every Tauri release, so **minor → 0.7.0**), optionally as a dry run.
+
+1. **Cut release** (`.github/workflows/cut-release.yml`) runs
+   `scripts/release.sh X.Y.Z` (bumps `[workspace.package] version` and
+   Cargo.lock, commits "Release vX.Y.Z", tags `vX.Y.Z`) and pushes both with the
+   `RELEASE_DEPLOY_KEY` deploy key, which bypasses the main ruleset and starts
+   Release. Locally: `scripts/release.sh 0.7.0` then `git push --atomic origin main v0.7.0`.
+2. **Release** (`.github/workflows/release.yml`, on the tag) checks the tag
+   against Cargo.toml, runs CI on the release commit, builds each architecture
+   with `scripts/bundle.sh --arch <arch> --dmg` on `macos-15` (x86_64
+   cross-compiled), signs the update bundles with `TAURI_SIGNING_PRIVATE_KEY` /
+   `_PASSWORD`, writes `latest.json` + `SHA256SUMS`, uploads everything to a
+   draft release, downloads it back, compares checksums and publishes.
+   Installed apps (Tauri and GPUI) then offer the update from
+   `releases/latest/download/latest.json`.
+
+Signing policy (unchanged): stable tags must be Developer ID signed and
+notarized unless the repository variable `ALLOW_UNSIGNED_RELEASES` is `true`
+(as now: ad-hoc signatures). With the `APPLE_CERTIFICATE` (base64 .p12),
+`APPLE_CERTIFICATE_PASSWORD`, `APPLE_SIGNING_IDENTITY` secrets the build signs
+with the Developer ID; with `APPLE_ID` / `APPLE_PASSWORD` / `APPLE_TEAM_ID` too
+it notarizes and staples (`bundle.sh --notarize`).
+
+Manual runs of Release on a branch, and pull requests touching the release
+machinery, build the same artifacts without publishing.
 
 ## What the user must run (credentials)
 

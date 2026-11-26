@@ -226,10 +226,9 @@ boa_fx.slow_rows(10, 0.5)` returns a row every half second.
 - an x86_64 build of every target, cross-compiled on the arm64 runner (tests
   run too when the runner has Rosetta 2).
 
-`.github/workflows/release.yml` builds both architectures and a universal
-bundle, on manual dispatch only. Releasing (signing, notarizing, publishing,
-the bridge release through the old Tauri updater) needs the maintainer's OK
-for every step: see [RELEASING.md](RELEASING.md).
+Releases: Actions → Cut release bumps, tags and pushes; the tag runs
+`.github/workflows/release.yml`, which builds both architectures and publishes
+the GitHub release with the update feed. See [RELEASING.md](RELEASING.md).
 
 ## Licences
 

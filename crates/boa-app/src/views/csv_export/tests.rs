@@ -70,6 +70,9 @@ fn with_result(vcx: &mut VisualTestContext) -> String {
         state
             .workspaces
             .update(cx, |w, cx| w.set_bottom_view(Some(tab.id.clone()), cx));
+        state.layout.update(cx, |l, cx| {
+            l.set_open(crate::models::layout::PanelKind::Bottom, true, cx)
+        });
         tab.id.to_string()
     });
     vcx.run_until_parked();

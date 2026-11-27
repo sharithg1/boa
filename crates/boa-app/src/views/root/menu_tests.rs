@@ -343,6 +343,8 @@ fn title_bar_menus_open_tabs_the_palette_and_the_connection_actions(cx: &mut Tes
     let dir = TempDir::new("menus-title");
     init(cx, dir.path());
     let (root, mut vcx) = open_main(cx);
+    vcx.simulate_keystrokes("alt-e");
+    draw(&mut vcx);
     // The title row spans the editor column: sidebar 260 to right panel 940.
     // "…" is its last button, "+" the first one left of the spacer.
     let more = find_menu_button(&mut vcx, 938., 860.);

@@ -197,19 +197,20 @@ fn option_b_e_j_toggle_the_panels_from_the_editor(cx: &mut TestAppContext) {
     let dir = TempDir::new("toggles");
     init(cx, dir.path());
     let (root, mut vcx) = open_main(cx);
-    // 1280 px wide: everything starts open (store.ts defaults).
-    for panel in [PanelKind::Sidebar, PanelKind::RightPanel, PanelKind::Bottom] {
-        assert!(layout_open(&mut vcx, panel), "{panel:?}");
-    }
+    // A fresh workspace keeps empty auxiliary panels out of the way.
+    assert!(layout_open(&mut vcx, PanelKind::Sidebar));
+    assert!(!layout_open(&mut vcx, PanelKind::RightPanel));
+    assert!(!layout_open(&mut vcx, PanelKind::Bottom));
     for (keys, panel) in [
         ("alt-b", PanelKind::Sidebar),
         ("alt-e", PanelKind::RightPanel),
         ("alt-j", PanelKind::Bottom),
     ] {
+        let initially_open = layout_open(&mut vcx, panel);
         vcx.simulate_keystrokes(keys);
-        assert!(!layout_open(&mut vcx, panel), "{keys} hides {panel:?}");
+        assert_eq!(layout_open(&mut vcx, panel), !initially_open);
         vcx.simulate_keystrokes(keys);
-        assert!(layout_open(&mut vcx, panel), "{keys} shows {panel:?}");
+        assert_eq!(layout_open(&mut vcx, panel), initially_open);
     }
     // The editor still has the focus and got no text.
     let text = vcx.update(|_, cx| root.read(cx).editor_text(cx));
@@ -275,6 +276,7 @@ fn dragging_the_handles_resizes_within_the_clamps(cx: &mut TestAppContext) {
     let dir = TempDir::new("resize");
     init(cx, dir.path());
     let (root, mut vcx) = open_main(cx);
+    vcx.simulate_keystrokes("alt-e alt-j");
     let size_of = |vcx: &mut VisualTestContext, panel| {
         vcx.update(|window, cx| root.read(cx).panel_size(panel, window, cx))
     };
@@ -341,9 +343,9 @@ fn layout_is_saved_to_the_config_dir_and_read_back(cx: &mut TestAppContext) {
     assert!(raw.contains("\"rightTab\":\"history\""), "{raw}");
     // session.json: the panel flags.
     let panels = layout::load_panels(dir.path());
-    assert_eq!(panels.right_panel_open, Some(false));
+    assert_eq!(panels.right_panel_open, Some(true));
     assert_eq!(panels.sidebar_open, Some(true));
-    assert_eq!(panels.bottom_open, Some(true));
+    assert_eq!(panels.bottom_open, Some(false));
 
     // A new app on the same dir starts from them.
     let mut cx2 = TestAppContext::single();
@@ -352,7 +354,7 @@ fn layout_is_saved_to_the_config_dir_and_read_back(cx: &mut TestAppContext) {
         let state = AppState::global(cx);
         assert_eq!(state.prefs.read(cx).get().sidebar_width, 360);
         assert_eq!(state.prefs.read(cx).get().right_tab, RightTab::History);
-        assert!(!state.layout.read(cx).right_panel_open());
+        assert!(state.layout.read(cx).right_panel_open());
         assert!(state.layout.read(cx).sidebar_open());
     });
 }

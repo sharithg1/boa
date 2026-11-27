@@ -1,7 +1,7 @@
 //! TableEdits.tsx: the data-editing pieces of a table tab around the grid
 //! (the grid itself stages the edits, `crate::grid`): the toolbar controls
-//! (add / delete row, revert all, "N changes", Preview…, Submit) or the
-//! reason the table is read-only, the SQL preview dialog (the exact
+//! (add / delete row) or the reason the table is read-only, a separate
+//! pending-changes bar (Review, Apply, Discard), the SQL preview dialog (the exact
 //! statements, run in one transaction; a failed submit points at its
 //! statement), and the "Discard N pending changes?" prompt
 //! (`DiscardEditsDialog`) before a reload, page change, new filter / sort or
@@ -24,8 +24,8 @@ use gpui_component::button::{Button, ButtonVariant, ButtonVariants as _};
 use gpui_component::spinner::Spinner;
 use gpui_component::{Disableable as _, Sizable as _, WindowExt as _};
 
-use super::chrome::{BoaIcon, IconName, icon, kbd, tooltip};
-use super::workspace::{tool_button, tool_button_icon};
+use super::chrome::{IconName, icon, kbd, tooltip};
+use super::workspace::tool_button;
 use crate::app_state::AppState;
 use crate::editor::highlight::style_runs;
 use crate::grid::ResultGrid;
@@ -62,9 +62,9 @@ pub fn preview_description(n: usize) -> String {
     )
 }
 
-/// "3 changes" in the toolbar.
+/// "3 pending changes" in the changes bar.
 pub fn changes_label(n: usize) -> String {
-    format!("{n} change{}", plural(n))
+    format!("{n} pending change{}", plural(n))
 }
 
 // ── Toolbar ───────────────────────────────────────────────────────────────
@@ -101,16 +101,15 @@ pub fn toolbar(
                 .into_any_element(),
         );
     }
-    let count = t.pending_count();
     let submitting = t.submitting();
     let selected = grid.read(cx).active_row();
-    let can_delete = selected.is_some_and(|row| {
-        t.pending()
-            .and_then(|p| p.row_mark(row))
-            .is_none_or(|m| m != RowMark::Deleted)
-    });
+    let can_delete = !submitting
+        && selected.is_some_and(|row| {
+            t.pending()
+                .and_then(|p| p.row_mark(row))
+                .is_none_or(|m| m != RowMark::Deleted)
+        });
     let (add_grid, delete_grid) = (grid.clone(), grid.clone());
-    let (revert, preview, submit) = (table.clone(), table.clone(), table.clone());
     Some(
         div()
             .flex()
@@ -122,11 +121,14 @@ pub fn toolbar(
                     "table-add-row",
                     IconName::Plus,
                     "Add row (⌘N)",
-                    true,
+                    !submitting,
                     None,
                     cx,
                 )
                 .on_click(move |_, window, cx| {
+                    if submitting {
+                        return;
+                    }
                     let handle = add_grid.focus_handle(cx);
                     window.focus(&handle, cx);
                     window.dispatch_action(Box::new(crate::actions::AddRow), cx);
@@ -149,40 +151,76 @@ pub fn toolbar(
                     }
                 }),
             )
+            .into_any_element(),
+    )
+}
+
+/// Pending actions get their own row so staging edits never squeezes browsing
+/// controls. Discard is explicit about removing all edits in this table tab.
+pub fn pending_bar(table: &Entity<TableTab>, cx: &App) -> Option<AnyElement> {
+    let t = table.read(cx);
+    let count = t.pending_count();
+    if count == 0 {
+        return None;
+    }
+    let p = cx.palette().clone();
+    let submitting = t.submitting();
+    let (revert, preview, submit) = (table.clone(), table.clone(), table.clone());
+    Some(
+        div()
+            .id("table-pending-bar")
+            .debug_selector(|| "table-pending-bar".to_owned())
+            .flex()
+            .flex_none()
+            .flex_wrap()
+            .items_center()
+            .gap(px(6.))
+            .min_h(px(36.))
+            .px(px(8.))
+            .py(px(6.))
+            .border_b_1()
+            .border_color(p.border)
+            .bg(p.field)
             .child(
-                tool_button_icon(
-                    "table-revert-all",
-                    BoaIcon::Undo2.icon(),
-                    "Revert all changes",
-                    count > 0 && !submitting,
-                    None,
-                    cx,
-                )
-                .on_click(move |_, _, cx| revert.update(cx, |t, cx| t.revert_all(cx))),
+                div()
+                    .id("table-changes")
+                    .flex_none()
+                    .px(px(4.))
+                    .text_size(theme::text::XS)
+                    .text_color(p.status_run)
+                    .whitespace_nowrap()
+                    .tooltip(tooltip("Pending changes"))
+                    .child(changes_label(count)),
             )
-            .when(count > 0, |d| {
-                d.child(
-                    div()
-                        .id("table-changes")
-                        .flex_none()
-                        .px(px(4.))
-                        .text_size(theme::text::XS)
-                        .text_color(p.status_run)
-                        .whitespace_nowrap()
-                        .tooltip(tooltip("Pending changes"))
-                        .child(changes_label(count)),
-                )
-                .child(
-                    xs_button("table-preview", "Preview…", false, &p)
-                        .on_click(move |_, _, cx| preview.update(cx, |t, cx| t.open_preview(cx))),
-                )
-                .child(
-                    xs_button("table-submit", "Submit", true, &p)
-                        .loading(submitting)
-                        .disabled(submitting)
-                        .on_click(move |_, _, cx| submit.update(cx, |t, cx| t.submit_edits(cx))),
-                )
-            })
+            .child(div().flex_1())
+            .child(
+                div()
+                    .flex()
+                    .flex_none()
+                    .items_center()
+                    .gap(px(4.))
+                    .child(
+                        xs_button("table-preview", "Review…", false, &p)
+                            .disabled(submitting)
+                            .on_click(move |_, _, cx| {
+                                preview.update(cx, |t, cx| t.open_preview(cx))
+                            }),
+                    )
+                    .child(
+                        xs_button("table-submit", "Apply", true, &p)
+                            .loading(submitting)
+                            .disabled(submitting)
+                            .on_click(move |_, _, cx| {
+                                submit.update(cx, |t, cx| t.submit_edits(cx))
+                            }),
+                    )
+                    .child(
+                        xs_button("table-revert-all", "Discard", false, &p)
+                            .tooltip("Discard all pending changes in this table tab")
+                            .disabled(submitting)
+                            .on_click(move |_, _, cx| revert.update(cx, |t, cx| t.revert_all(cx))),
+                    ),
+            )
             .into_any_element(),
     )
 }

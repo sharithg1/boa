@@ -6,7 +6,7 @@ description: Run, drive or screenshot the Boa GPUI app (crates/boa-app) against 
 # Run Boa (GPUI) for a check
 
 The user keeps working on this Mac: **the app must never show a window or take
-the focus** (see CLAUDE.md). Everything below runs it hidden and captures
+the focus** (see AGENTS.md). Everything below runs it hidden and captures
 offscreen. Details and every dev variable: `docs/DEVELOPMENT.md`; the dev
 hooks: `crates/boa-app/src/views/dev.rs`, `views/dev_input.rs`, `grid/dev.rs`.
 
@@ -43,12 +43,12 @@ W=$(mktemp -d -t boa-run)                      # config dir, command file, shots
 : > "$W/input.txt"
 ```
 
-Then start it as a **background** command (the shell tool's background mode,
-or awaited with a short timeout so it moves to the background — not `&` /
-`nohup`). `exec` keeps the PID that `$W/pid` records:
+Then start it as a **background** command (your agent's background-command mode,
+or a command awaited with a short timeout so it moves to the background — not
+`&` / `nohup`). `exec` keeps the PID that `$W/pid` records:
 
 ```sh
-sh -c 'echo $ > "$0/pid"; exec env BOA_CONFIG_DIR="$0/config" BOA_DEV_BACKGROUND=1 \
+sh -c 'echo $$ > "$0/pid"; exec env BOA_CONFIG_DIR="$0/config" BOA_DEV_BACKGROUND=1 \
   BOA_DEV_CONNECTION=1 BOA_DEV_INPUT="$0/input.txt" BOA_NO_UPDATE_CHECK=1 \
   BOA_GRID_QUIT_AFTER_MS=600000 target/debug/boa-app' "$W"
 ```
@@ -75,9 +75,9 @@ reading a shot).
 `front` exists but is ignored with `BOA_DEV_BACKGROUND`; don't use it.
 
 Coordinates are window points; the main window is 1280 × 820 pt and **shots
-are 2× (2560 × 1640 px)**. The Read tool may show a shot scaled down (e.g.
+are 2× (2560 × 1640 px)**. Your image viewer may show a shot scaled down (e.g.
 2000 px wide), so convert what you see: point = seen px × (2560 / seen width) / 2.
-Take a shot, Read it, then click.
+Take a shot, look at it, then click.
 
 Nothing is selected at launch: **select a database first** (click its row in
 the explorer), or ⌘T and the console have nothing to run on. Example (verified)

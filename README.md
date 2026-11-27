@@ -17,7 +17,7 @@
 <h3 align="center"><a href="https://github.com/sharithg1/boa/releases/latest"><ins>Download Boa</ins></a></h3>
 
 <p align="center">
-  <img width="960" alt="Boa with a console on a production Postgres database and its result grid" src="showcase/10-production-connection.png" />
+  <img width="960" alt="Boa with the Database Explorer, a SQL console and its result grid" src="showcase/hero.png" />
 </p>
 
 ## Why Boa

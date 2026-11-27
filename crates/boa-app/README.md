@@ -11,7 +11,7 @@ src/
   main.rs          calls app::run()
   app.rs           app init, app-wide actions (menu bar), main window options, screenshot hook
   app_state.rs     AppState global (backend + app-wide models), config dir (BOA_CONFIG_DIR)
-  actions.rs       EVERY action (HANDOFF-PARITY.md §10), documented with its keys and handler
+  actions.rs       EVERY action, documented with its keys and handler
   keymap.rs        EVERY key binding, key contexts, the ⌥ rule
   models/          GPUI entities, no views (see the table in models/mod.rs)
   views/           one module per React component (App.tsx → root.rs, TitleBar.tsx → title_bar.rs, …)

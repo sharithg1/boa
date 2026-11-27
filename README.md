@@ -17,7 +17,7 @@
 <h3 align="center"><a href="https://github.com/sharithg1/boa/releases/latest"><ins>Download Boa</ins></a></h3>
 
 <p align="center">
-  <img width="960" alt="Boa with a console on a production Postgres database and its result grid" src="docs/images/boa.png" />
+  <img width="960" alt="Boa with a console on a production Postgres database and its result grid" src="showcase/10-production-connection.png" />
 </p>
 
 ## Why Boa
@@ -86,7 +86,7 @@ Tabs, their SQL, the active tab and the panel layout come back on launch.
 New releases download in the background; one click on **Restart to
 update** installs them.
 
-The details of each feature are in [docs/USAGE.md](docs/USAGE.md).
+Annotated screenshots of each feature are in [showcase/](showcase/README.md).
 
 ## Supported databases
 
@@ -120,8 +120,10 @@ and query history are stored in the app's config directory.
 ## Development
 
 Building from source, the layout, the checks and the dev hooks: see
-[docs/DEVELOPMENT.md](docs/DEVELOPMENT.md). Releases:
-[docs/RELEASING.md](docs/RELEASING.md).
+[AGENTS.md](AGENTS.md) and the
+[run-boa skill](.agents/skills/run-boa/SKILL.md). Releases: run the Cut
+release workflow in Actions; its tag starts
+[release.yml](.github/workflows/release.yml).
 
 ## Licence
 

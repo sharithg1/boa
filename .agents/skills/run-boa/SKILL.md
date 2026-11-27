@@ -7,8 +7,7 @@ description: Run, drive or screenshot the Boa GPUI app (crates/boa-app) against 
 
 The user keeps working on this Mac: **the app must never show a window or take
 the focus** (see AGENTS.md). Everything below runs it hidden and captures
-offscreen. Details and every dev variable: `docs/DEVELOPMENT.md`; the dev
-hooks: `crates/boa-app/src/views/dev.rs`, `views/dev_input.rs`, `grid/dev.rs`.
+offscreen. Dev variables: the table at the end; the dev hooks: `crates/boa-app/src/views/dev.rs`, `views/dev_input.rs`, `grid/dev.rs`.
 
 ## Prefer a test
 
@@ -105,7 +104,7 @@ PNGs to check them.
 One-shot capture without scripting: `BOA_SCREENSHOT=/abs/out.png
 BOA_SCREENSHOT_DELAY_MS=2000` (renders and quits). Other scripted states
 (`BOA_DEV_SETTINGS`, `BOA_DEV_PALETTE`, `BOA_DEV_HISTORY`, `BOA_GRID_SQL`, …)
-are listed in `docs/DEVELOPMENT.md`.
+are listed at the end.
 
 ## 4. Clean up
 
@@ -116,5 +115,22 @@ other agents may be running copies). Delete `$W` when done.
 
 Offscreen captures don't include native chrome: traffic lights, the menu bar,
 macOS dialogs and save panels, real trackpad / IME input. For those, ask the
-user before a visible run and say when the window will appear; the list of
-such checks is `docs/MANUAL-CHECKS.md`.
+user before a visible run and say when the window will appear.
+
+## Dev environment variables
+
+Each is read where its name appears in `crates/` (`git grep '"BOA_'`).
+
+| Variable | Effect |
+|---|---|
+| `BOA_CONFIG_DIR=<dir>` | config dir instead of the real one (always set it) |
+| `BOA_LOG=<filter>` | `tracing` filter, e.g. `debug` or `boa_core=trace` (default `info`) |
+| `BOA_NO_UPDATE_CHECK=1` | don't check for updates |
+| `BOA_SCREENSHOT`, `BOA_SCREENSHOT_DELAY_MS` | render a PNG and quit (feature `screenshot`) |
+| `BOA_EDITOR_TEXT`, `BOA_EDITOR_TYPE` | put text in the editor / type it once the catalog is loaded |
+| `BOA_GRID_*` | grid hooks: startup SQL, selection, staged edits, scroll, benchmark, `BOA_GRID_QUIT_AFTER_MS` (`crates/boa-app/src/grid/dev.rs`) |
+| `BOA_DEV_CONNECTION=1` | (`dev-hooks`) seed "Local dev" into an empty config dir and connect; `BOA_DEV_RECONNECT=1` adds an unreachable one |
+| `BOA_DEV_INPUT=<file>` | (`dev-hooks`) drive the window from a command file (`crates/boa-app/src/views/dev_input.rs`) |
+| `BOA_DEV_BACKGROUND=1` | (`dev-hooks`) stay off the user's screen; use on every run |
+| `BOA_DEV_*` | other scripted states: settings, palette, history, tx, exports, … (`crates/boa-app/src/views/dev.rs`) |
+| `BOA_UPDATE_ENDPOINT=<url>` | the `latest.json` feed for update checks |

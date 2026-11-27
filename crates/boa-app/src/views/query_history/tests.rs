@@ -373,6 +373,8 @@ fn the_right_panels_history_tab_searches_and_escape_clears(cx: &mut TestAppConte
         });
     });
     let (root, mut vcx) = open_main(cx);
+    vcx.simulate_keystrokes("alt-e");
+    vcx.run_until_parked();
     let panel = vcx
         .update(|_, cx| {
             root.read(cx)

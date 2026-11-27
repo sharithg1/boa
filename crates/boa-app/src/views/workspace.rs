@@ -52,7 +52,7 @@ use crate::theme::{self, ActivePalette as _};
 /// Toolbar height (`h-9`).
 pub const TOOLBAR_HEIGHT: gpui::Pixels = px(36.);
 /// The table toolbar's filter of the loaded rows (Workspace.tsx).
-pub const ROW_FILTER_PLACEHOLDER: &str = "Filter loaded rows";
+pub const ROW_FILTER_PLACEHOLDER: &str = "Find in loaded rows";
 
 /// What the workspace reports to the window.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -699,12 +699,11 @@ impl Workspace {
         let meta = t.meta(cx);
         let info = match (&t.result, t.loading) {
             (Some(r), _) => {
-                let rows = if t.offset == 0 && !r.truncated {
-                    format!("{} rows · ", crate::grid::page::grouped(r.rows.len()))
-                } else {
-                    String::new()
-                };
-                format!("{rows}{} ms", r.ms)
+                format!(
+                    "{} loaded · {} ms",
+                    crate::grid::page::grouped(r.rows.len()),
+                    r.ms
+                )
             }
             (None, true) if connected => "Loading…".to_owned(),
             _ => String::new(),
@@ -712,7 +711,12 @@ impl Workspace {
         let total = meta
             .as_ref()
             .filter(|m| m.rows > 0)
-            .map(|m| format!(" · ~{} total", crate::grid::page::grouped(m.rows as usize)))
+            .map(|m| {
+                format!(
+                    " · ~{} in table",
+                    crate::grid::page::grouped(m.rows as usize)
+                )
+            })
             .unwrap_or_default();
         let pager_state = t.result.as_ref().map(|r| PagerState {
             offset: t.offset,
@@ -726,6 +730,7 @@ impl Workspace {
         let key = t.key.clone();
         let select = format!("{};", t.sql);
         let edits = table_edits::toolbar(&pane.table, &pane.grid, cx);
+        let pending_bar = table_edits::pending_bar(&pane.table, cx);
         // CsvExport.tsx ExportMenu: the whole table with the tab's filter and
         // sort; "Copy page as CSV" copies the rows the grid shows (the row
         // filter and staged edits applied: TableEdits.tsx `rows`). Disabled
@@ -775,9 +780,10 @@ impl Workspace {
         });
         let row_filter = div()
             .id("table-row-filter")
+            .debug_selector(|| "table-row-filter".to_owned())
             .flex()
             .flex_1()
-            .min_w_0()
+            .min_w(px(200.))
             .max_w(px(320.))
             .items_center()
             .gap(px(6.))
@@ -801,11 +807,15 @@ impl Workspace {
                 ),
             );
         let toolbar = div()
+            .id("table-toolbar")
+            .debug_selector(|| "table-toolbar".to_owned())
             .flex()
             .flex_none()
+            .flex_wrap()
             .items_center()
             .gap(px(2.))
-            .h(TOOLBAR_HEIGHT)
+            .min_h(TOOLBAR_HEIGHT)
+            .py(px(6.))
             .px(px(8.))
             .border_b_1()
             .border_color(p.border)
@@ -834,14 +844,6 @@ impl Workspace {
                     cx,
                 )
             }))
-            .child(
-                div()
-                    .px(px(6.))
-                    .text_size(theme::text::XS)
-                    .text_color(p.dim)
-                    .whitespace_nowrap()
-                    .child(format!("{info}{total}")),
-            )
             .children(edits)
             .child(vsep(cx).mx(px(6.)))
             .child(row_filter)
@@ -897,8 +899,20 @@ impl Workspace {
             .size_full()
             .overflow_hidden()
             .child(toolbar)
+            .children(pending_bar)
             .child(pane.filter_bar.clone())
             .child(body)
+            .child(
+                div()
+                    .flex_none()
+                    .px(px(8.))
+                    .py(px(4.))
+                    .border_t_1()
+                    .border_color(p.border)
+                    .text_size(theme::text::XS)
+                    .text_color(p.quiet)
+                    .child(format!("{info}{total}")),
+            )
     }
 }
 

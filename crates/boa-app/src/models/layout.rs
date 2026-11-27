@@ -19,10 +19,6 @@ use serde_json::Value;
 
 use super::session::SESSION_FILE;
 
-/// The right panel starts open in windows at least this wide (store.ts:
-/// `window.innerWidth >= 1100`), when the session doesn't say.
-pub const RIGHT_PANEL_MIN_WINDOW_WIDTH: f32 = 1100.;
-
 /// Settings pages (store.ts `SettingsPage`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum SettingsPage {
@@ -84,13 +80,13 @@ pub struct Layout {
 impl EventEmitter<LayoutEvent> for Layout {}
 
 impl Layout {
-    /// The store.ts defaults: sidebar and Database Output open, the right
-    /// panel open in windows at least 1100 px wide.
-    pub fn new(window_width: f32) -> Self {
+    /// A fresh workspace shows the explorer. Auxiliary panels start closed;
+    /// saved session flags take precedence and query outcomes reveal output.
+    pub fn new(_window_width: f32) -> Self {
         Self {
             sidebar_open: true,
-            right_panel_open: window_width >= RIGHT_PANEL_MIN_WINDOW_WIDTH,
-            bottom_open: true,
+            right_panel_open: false,
+            bottom_open: false,
             settings: None,
         }
     }

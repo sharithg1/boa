@@ -134,6 +134,9 @@ fn show_result(
         state
             .workspaces
             .update(cx, |w, cx| w.set_bottom_view(Some(tab), cx));
+        state
+            .layout
+            .update(cx, |l, cx| l.set_open(PanelKind::Bottom, true, cx));
     });
     draw(vcx);
     let grid = vcx.update(|_, cx| root.read(cx).bottom_panel().read(cx).grid().clone());
@@ -164,6 +167,8 @@ fn show_result(
 /// tx keys, pressed while an overlay has the focus: none of them may act.
 fn assert_blocked(vcx: &mut VisualTestContext, what: &str) {
     let tabs = tab_count(vcx);
+    let panels = [PanelKind::Sidebar, PanelKind::RightPanel, PanelKind::Bottom]
+        .map(|panel| (panel, layout_open(vcx, panel)));
     for keys in [
         "cmd-w", "cmd-t", "alt-n", "alt-1", "alt-down", "alt-b", "alt-e", "alt-j",
     ] {
@@ -171,8 +176,8 @@ fn assert_blocked(vcx: &mut VisualTestContext, what: &str) {
         draw(vcx);
         assert_eq!(tab_count(vcx), tabs, "{keys} over {what}");
     }
-    for panel in [PanelKind::Sidebar, PanelKind::RightPanel, PanelKind::Bottom] {
-        assert!(layout_open(vcx, panel), "{panel:?} over {what}");
+    for (panel, was_open) in panels {
+        assert_eq!(layout_open(vcx, panel), was_open, "{panel:?} over {what}");
     }
     assert!(!starts_tx_end(vcx, "cmd-shift-enter"), "⌘⇧↵ over {what}");
     assert!(

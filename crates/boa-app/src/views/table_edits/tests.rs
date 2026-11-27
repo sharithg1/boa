@@ -139,8 +139,8 @@ fn prompt_and_toolbar_texts_match_the_source() {
         discard_description("close the tab"),
         "They have not been submitted. To close the tab, they will be lost."
     );
-    assert_eq!(changes_label(1), "1 change");
-    assert_eq!(changes_label(2), "2 changes");
+    assert_eq!(changes_label(1), "1 pending change");
+    assert_eq!(changes_label(2), "2 pending changes");
     assert!(super::preview_description(1).starts_with("1 statement, run in one transaction"));
     assert!(super::preview_description(2).starts_with("2 statements, run in one transaction"));
     assert_eq!(TableNav::Reload.action(), "reload");
@@ -481,6 +481,45 @@ fn click_at(vcx: &mut VisualTestContext, selector: &'static str) {
 fn drawn(vcx: &mut VisualTestContext, selector: &'static str) -> bool {
     draw(vcx);
     vcx.debug_bounds(selector).is_some()
+}
+
+#[gpui::test]
+fn staged_edits_keep_browsing_controls_stable_at_narrow_and_wide_sizes(cx: &mut TestAppContext) {
+    let (_dir, root, mut vcx, table, _) = fake_table_tab(cx, "ux-pending-bar");
+    let grid = grid_of(&mut vcx, &root, &table);
+    for (width, right_open) in [(720., false), (1280., true), (1600., false)] {
+        vcx.update(|_, cx| {
+            AppState::global(cx).layout.clone().update(cx, |l, cx| {
+                l.set_open(PanelKind::RightPanel, right_open, cx)
+            });
+        });
+        vcx.simulate_resize(gpui::size(gpui::px(width), gpui::px(820.)));
+        draw(&mut vcx);
+        assert!(!drawn(&mut vcx, "table-pending-bar"));
+        let toolbar = vcx.debug_bounds("table-toolbar").unwrap();
+        let filter = vcx.debug_bounds("table-row-filter").unwrap();
+        assert!(filter.size.width >= gpui::px(200.));
+        assert!(toolbar.contains(&filter.origin));
+        assert!(filter.right() <= toolbar.right());
+
+        stage(&mut vcx, &grid, |p, rows| {
+            p.set_cell(rows, RowRef::Base(0), 1, Some("renamed".into()))
+        });
+        assert_eq!(vcx.debug_bounds("table-toolbar"), Some(toolbar));
+        assert_eq!(vcx.debug_bounds("table-row-filter"), Some(filter));
+        let pending = vcx.debug_bounds("table-pending-bar").unwrap();
+        assert!(pending.top() >= toolbar.bottom());
+        assert!(pending.right() <= toolbar.right());
+
+        vcx.update(|_, cx| table.update(cx, |t, cx| t.revert_all(cx)));
+        draw(&mut vcx);
+        assert!(!drawn(&mut vcx, "table-pending-bar"));
+        assert_eq!(vcx.debug_bounds("table-row-filter"), Some(filter));
+        assert_eq!(
+            vcx.update(|_, cx| grid.read(cx).pending().change_count()),
+            0
+        );
+    }
 }
 
 #[gpui::test]

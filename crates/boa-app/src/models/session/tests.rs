@@ -341,14 +341,14 @@ fn a_pending_save_is_written_on_quit(cx: &mut TestAppContext) {
     let s = state(cx);
     cx.update(|cx| {
         s.layout
-            .update(cx, |l, cx| l.set_open(PanelKind::RightPanel, false, cx))
+            .update(cx, |l, cx| l.set_open(PanelKind::RightPanel, true, cx))
     });
     cx.run_until_parked();
     assert!(cx.read(|cx| s.session.read(cx).save_pending()));
     assert_eq!(session_json(dir.path()), None);
     cx.quit();
     let raw = session_json(dir.path()).expect("flushed on quit");
-    assert!(raw.contains(r#""rightPanelOpen":false"#), "{raw}");
+    assert!(raw.contains(r#""rightPanelOpen":true"#), "{raw}");
 }
 
 #[gpui::test]
@@ -555,8 +555,9 @@ fn without_a_session_nothing_is_restored_or_reconnected(cx: &mut TestAppContext)
     cx.run_until_parked();
     assert!(api.calls().is_empty());
     assert!(cx.read(|cx| s.workspaces.read(cx).workspaces.is_empty()));
-    // Defaults (1280 px: everything open).
-    assert!(cx.read(|cx| s.layout.read(cx).right_panel_open()));
+    // Without saved flags, empty auxiliary panels stay closed.
+    assert!(!cx.read(|cx| s.layout.read(cx).right_panel_open()));
+    assert!(!cx.read(|cx| s.layout.read(cx).bottom_open()));
 }
 
 // ── Tauri compatibility ───────────────────────────────────────────────────

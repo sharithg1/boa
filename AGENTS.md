@@ -22,10 +22,19 @@ scripts/bundle.sh, rehearse-*.sh, latest-json.sh, check-version.sh, release.sh
 - macOS 11+ with the Xcode Command Line Tools (full Xcode not needed).
 - Rust via rustup; `rust-toolchain.toml` pins the version. In non-interactive
   shells: `export PATH="$HOME/.cargo/bin:$PATH"`.
-- PostgreSQL 17 (Homebrew `postgresql@17`) for the live tests and fixtures:
-  role `boa` / `boa`, database `boa_dev`, loaded with `scripts/dev-fixtures.sh`
-  (idempotent). Never drop or alter `boa_dev.public.customers` / `orders`; put
-  test data in your own schema.
+- PostgreSQL 17 in Docker (no local psql needed) for the live tests and
+  fixtures: role `boa` / `boa`, database `boa_dev`, loaded with
+  `scripts/dev-fixtures.sh` (idempotent; it runs psql inside the container).
+  Never drop or alter `boa_dev.public.customers` / `orders`; put test data in
+  your own schema. The container restarts with Docker; create it once with:
+
+  ```sh
+  docker run -d --name boa-postgres --restart unless-stopped -p 5432:5432 \
+    -e POSTGRES_USER=boa -e POSTGRES_PASSWORD=boa -e POSTGRES_DB=postgres \
+    -v boa-pgdata:/var/lib/postgresql/data postgres:17
+  ```
+
+  For a psql shell: `docker exec -it boa-postgres psql -U boa -d boa_dev`.
 
 ## Build and run
 
@@ -33,7 +42,11 @@ scripts/bundle.sh, rehearse-*.sh, latest-json.sh, check-version.sh, release.sh
 cargo build                      # debug build of the workspace
 BOA_CONFIG_DIR=<scratch dir> BOA_DEV_BACKGROUND=1 cargo run -p boa-app --features dev-hooks
 cargo build --release -p boa-app # optimized
+scripts/dev.sh                   # rebuild + relaunch on save (needs watchexec)
 ```
+
+There is no hot reload; `scripts/dev.sh` is the dev loop (see its header).
+Agents running it must add `BOA_DEV_BACKGROUND=1` like any other run.
 
 ## Checks before merging
 

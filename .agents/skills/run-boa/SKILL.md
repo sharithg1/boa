@@ -22,9 +22,7 @@ what tests can't show: layout, pixels, real data, timing.
 
 ```sh
 export PATH="$HOME/.cargo/bin:$PATH"
-/opt/homebrew/opt/postgresql@17/bin/pg_ctl -D /opt/homebrew/var/postgresql@17 status \
-  || /opt/homebrew/opt/postgresql@17/bin/pg_ctl -D /opt/homebrew/var/postgresql@17 \
-       -l /opt/homebrew/var/log/postgresql@17.log start
+docker start boa-postgres   # Postgres 17 in Docker; create it as in AGENTS.md if missing
 scripts/dev-fixtures.sh   # idempotent; role boa/boa, db boa_dev (+ boa_fx* schemas, boa_dev2)
 ```
 

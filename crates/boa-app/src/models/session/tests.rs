@@ -111,6 +111,7 @@ impl ConnApi for FakeApi {
 fn save_connections(dir: &Path, ids: &[&str]) {
     for id in ids {
         let config = ConnConfig {
+            kind: Default::default(),
             id: (*id).into(),
             name: format!("{id} server"),
             host: "localhost".into(),

@@ -82,6 +82,7 @@ pub(crate) fn fake_connection(cx: &mut gpui::App, id: &str, databases: &[&str]) 
     state.connections.update(cx, |c, cx| {
         c.saved.push(SavedConnection {
             config: ConnConfig {
+                kind: Default::default(),
                 id: id.to_owned(),
                 name: format!("{id} server"),
                 host: "localhost".into(),

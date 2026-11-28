@@ -449,9 +449,25 @@ impl Connections {
         self.prompt.as_ref()
     }
 
-    /// store.ts `connectionString`: `postgresql://user@host:port/db` (no password).
+    /// store.ts `connectionString`: `postgresql://user@host:port/db` (no
+    /// password); Redis: `redis://user@host:port/<index>`.
     pub fn connection_string(&self, id: &str, database: Option<&str>) -> Option<String> {
         let c = &self.get(id)?.config;
+        if c.kind.is_redis() {
+            let scheme = match c.ssl_mode {
+                boa_core::connections::SslMode::Disable
+                | boa_core::connections::SslMode::Prefer => "redis",
+                _ => "rediss",
+            };
+            let auth = if c.user.is_empty() {
+                String::new()
+            } else {
+                format!("{}@", encode_uri_component(&c.user))
+            };
+            let db = database.map_or_else(|| c.database.clone(), str::to_owned);
+            let index = boa_core::redis::db_index(&db).unwrap_or(0);
+            return Some(format!("{scheme}://{auth}{}:{}/{index}", c.host, c.port));
+        }
         let auth = if c.user.is_empty() {
             String::new()
         } else {
@@ -1443,6 +1459,7 @@ pub mod dev {
     /// The seeded config.
     pub fn config() -> ConnConfig {
         ConnConfig {
+            kind: Default::default(),
             id: DEV_CONNECTION_ID.into(),
             name: "Local dev".into(),
             host: "localhost".into(),
@@ -1472,6 +1489,7 @@ pub mod dev {
             }
             if std::env::var(RECONNECT_ENV).ok().as_deref() == Some("1") {
                 let unreachable = ConnConfig {
+                    kind: Default::default(),
                     id: UNREACHABLE_ID.into(),
                     name: "Unreachable".into(),
                     port: 1,

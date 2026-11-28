@@ -279,7 +279,14 @@ impl Workspace {
         };
         let editor = cx.new(|cx| SqlEditor::with_text(sql, window, cx));
         let schemas = self.catalogs.read(cx).get(&key).map(|c| c.schemas.clone());
+        let redis = AppState::try_global(cx).is_some_and(|s| {
+            s.connections
+                .read(cx)
+                .get(&key.connection_id)
+                .is_some_and(|c| c.config.kind.is_redis())
+        });
         editor.update(cx, |e, cx| {
+            e.set_redis(redis, cx);
             e.set_default_schema(default_schema);
             if let Some(schemas) = schemas {
                 e.set_schemas(schemas, cx);
@@ -568,6 +575,10 @@ impl Workspace {
         let can_run = !connecting && !c.sql.trim().is_empty() && running.is_none();
         let failed = c.failed.clone();
         let default_schema = c.default_schema.clone();
+        let redis = active
+            .saved
+            .as_ref()
+            .is_some_and(|s| s.config.kind.is_redis());
         let editor = pane.editor.clone();
         let console = pane.console.clone();
         let schema_names: Vec<String> = self
@@ -660,17 +671,22 @@ impl Workspace {
                 .on_click(|_, window, cx| window.dispatch_action(Box::new(ToggleQueryHistory), cx)),
             )
             .child(vsep(cx).mx(px(6.)))
-            // TxControls.tsx: the transaction mode and state, then the connection tag.
-            .children(super::tx_controls::render(
-                &active.key(),
-                active.is_connected(),
-                running.is_some(),
-                cx,
-            ))
+            // TxControls.tsx: the transaction mode and state (not for Redis,
+            // which has no sessions to hold one), then the connection tag.
+            .children(if redis {
+                Vec::new()
+            } else {
+                super::tx_controls::render(
+                    &active.key(),
+                    active.is_connected(),
+                    running.is_some(),
+                    cx,
+                )
+            })
             .children(connection_tag(active.saved.as_ref(), cx).map(|t| t.ml(px(6.))))
             .children(running.map(|since| run_status(since, cx).ml(px(8.))))
             .child(div().flex_1())
-            .child(picker);
+            .when(!redis, |d| d.child(picker));
         let dismiss = console.clone();
         div()
             .flex()

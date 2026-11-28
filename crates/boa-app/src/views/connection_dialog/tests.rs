@@ -116,6 +116,7 @@ fn saved_json(dir: &Path) -> serde_json::Value {
 
 fn seed(dir: &Path, id: &str, password: Option<&str>) -> ConnConfig {
     let cfg = ConnConfig {
+        kind: Default::default(),
         id: id.into(),
         name: "Seeded".into(),
         host: "127.0.0.1".into(),
@@ -552,4 +553,49 @@ fn enter_saves_the_dialog_and_connects_from_the_prompt(cx: &mut TestAppContext) 
                 == "failed"
         })
     });
+}
+
+#[gpui::test]
+fn the_type_picker_switches_to_redis_and_saves_it(cx: &mut TestAppContext) {
+    let dir = TempDir::new("redis");
+    let mut vcx = init(cx, dir.path());
+    let view = open(&mut vcx, None);
+    vcx.update(|window, cx| {
+        view.update(cx, |v, cx| {
+            v.set_kind(boa_core::connections::DbKind::Redis, window, cx)
+        })
+    });
+    vcx.run_until_parked();
+    // The PostgreSQL defaults swapped for Redis's; no user needed.
+    assert_eq!(value(&mut vcx, &view, Field::Port), "6379");
+    assert_eq!(value(&mut vcx, &view, Field::User), "");
+    assert_eq!(value(&mut vcx, &view, Field::Database), "0");
+    vcx.update(|_, cx| {
+        let v = view.read(cx);
+        assert_eq!(v.config().ssl_mode, SslMode::Disable);
+        assert!(v.valid());
+        assert_eq!(v.name_placeholder(), "db0@localhost");
+        assert_eq!(v.title(), "New Redis data source");
+    });
+    // A pasted postgres:// URL switches back.
+    type_into(&mut vcx, &view, Field::Url, "postgresql://ann@db:5433/shop");
+    vcx.update(|_, cx| {
+        let c = view.read(cx).config();
+        assert!(c.kind.is_postgres());
+        assert_eq!((c.port, c.user.as_str()), (5433, "ann"));
+    });
+    // And a redis:// one to Redis again.
+    // (A URL without a user keeps the typed one, as for PostgreSQL URLs.)
+    type_into(&mut vcx, &view, Field::Url, "redis://127.0.0.1:1/2");
+    assert_eq!(value(&mut vcx, &view, Field::User), "ann");
+    assert_eq!(value(&mut vcx, &view, Field::Database), "2");
+    vcx.update(|window, cx| view.update(cx, |v, cx| v.submit(window, cx)));
+    wait_for(&mut vcx, "the dialog to close", |vcx| !has_dialog(vcx));
+    let json = saved_json(dir.path());
+    let saved = &json.as_array().unwrap()[0];
+    assert_eq!(saved["kind"], "redis");
+    assert_eq!(saved["name"], "db2@127.0.0.1");
+    assert_eq!(saved["port"], 1);
+    assert_eq!(saved["database"], "2");
+    assert_eq!(saved["sslMode"], "disable");
 }

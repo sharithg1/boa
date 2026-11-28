@@ -404,7 +404,7 @@ impl RightPanel {
                 .size_full()
                 .overflow_y_scroll()
                 .child(Self::header(
-                    "PostgreSQL",
+                    conn.config.kind.label(),
                     false,
                     conn.config.name.clone(),
                     key.database.clone(),

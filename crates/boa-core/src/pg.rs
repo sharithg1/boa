@@ -1042,6 +1042,7 @@ mod tests {
         let env = |k: &str, d: &str| std::env::var(k).unwrap_or_else(|_| d.to_owned());
         Some((
             ConnConfig {
+                kind: Default::default(),
                 id: "test".into(),
                 name: "test".into(),
                 host,
@@ -1286,6 +1287,7 @@ mod tests {
         };
         let env = |k: &str, d: &str| std::env::var(k).unwrap_or_else(|_| d.to_owned());
         let config = ConnConfig {
+            kind: Default::default(),
             id: "test".into(),
             name: "test".into(),
             host,

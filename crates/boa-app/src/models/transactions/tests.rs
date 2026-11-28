@@ -571,6 +571,7 @@ fn env(k: &str, d: &str) -> String {
 fn live_connection(vcx: &mut VisualTestContext, id: &str, user: &str, read_only: bool) -> DbKey {
     let database = env("PGDATABASE", "boa_dev");
     let config = ConnConfig {
+        kind: Default::default(),
         id: id.into(),
         name: format!("Local {id}"),
         host: env("PGHOST", "localhost"),

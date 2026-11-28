@@ -1,4 +1,5 @@
-//! ConnectionDialog.tsx: add / edit a PostgreSQL data source (General
+//! ConnectionDialog.tsx: add / edit a PostgreSQL or Redis data source (the
+//! type picker, General
 //! fields, `postgresql://` URL paste, SSL mode, environment tag + colour,
 //! save password, read-only, the SSH tunnel with agent or key-file auth and
 //! a file picker), Test connection, Save (and connect), Delete with a
@@ -15,10 +16,12 @@
 use std::cell::Cell;
 
 use boa_core::connections::{
-    ConnConfig, Environment, SavedConnection, SshAuth, SshTunnel, SslMode,
+    ConnConfig, DbKind, Environment, SavedConnection, SshAuth, SshTunnel, SslMode,
 };
 use boa_core::grid::conn_tag::{self, ConnectionColor};
-use boa_core::state::conn_url::{blank_config, form_valid, name_placeholder, named, parse_url};
+use boa_core::state::conn_url::{
+    blank_config, form_valid, name_placeholder, named, parse_url, switch_kind,
+};
 use gpui::prelude::*;
 use gpui::{
     App, Context, Entity, FocusHandle, Focusable, PathPromptOptions, Pixels, SharedString,
@@ -51,6 +54,21 @@ pub const SSL_MODES: [(SslMode, &str); 4] = [
     (SslMode::Require, "Require"),
     (SslMode::VerifyFull, "Verify full"),
 ];
+
+/// Redis's TLS choices (no "prefer": a Redis client can't fall back).
+pub const REDIS_SSL_MODES: [(SslMode, &str); 3] = [
+    (SslMode::Disable, "Disable"),
+    (SslMode::Require, "Require"),
+    (SslMode::VerifyFull, "Verify full"),
+];
+
+/// The URL field's placeholder per kind.
+fn url_placeholder(kind: DbKind) -> &'static str {
+    match kind {
+        DbKind::Postgres => "postgresql://user:password@host:5432/database",
+        DbKind::Redis => "redis://user:password@host:6379/0 (rediss:// for TLS)",
+    }
+}
 
 /// SSH authentications in menu order (`SSH_AUTH`).
 pub const SSH_AUTH: [(SshAuth, &str); 2] = [
@@ -210,10 +228,7 @@ impl ConnectionDialog {
         let ssh = cfg.ssh.clone().unwrap_or_else(blank_ssh);
         let value = |field: Field| -> (String, String) {
             match field {
-                Field::Url => (
-                    String::new(),
-                    "postgresql://user:password@host:5432/database".into(),
-                ),
+                Field::Url => (String::new(), url_placeholder(cfg.kind).into()),
                 Field::Name => (cfg.name.clone(), name_placeholder(&cfg)),
                 Field::Host => (cfg.host.clone(), String::new()),
                 Field::Port => (
@@ -388,7 +403,11 @@ impl ConnectionDialog {
                 let Some(parsed) = parse_url(&text) else {
                     return;
                 };
+                let kind = self.cfg.kind;
                 let password = parsed.apply(&mut self.cfg);
+                if self.cfg.kind != kind {
+                    self.refresh_url_placeholder(window, cx);
+                }
                 for (f, value) in [
                     (Field::Host, self.cfg.host.clone()),
                     (Field::Port, self.cfg.port.to_string()),
@@ -460,6 +479,32 @@ impl ConnectionDialog {
     ) {
         self.set_text(field, text, window, cx);
         self.on_change(field, window, cx);
+    }
+
+    /// The server type (the PostgreSQL / Redis picker): swaps the fields that
+    /// still hold the other type's defaults (port, user, database, TLS).
+    pub fn set_kind(&mut self, kind: DbKind, window: &mut Window, cx: &mut Context<Self>) {
+        if self.cfg.kind == kind {
+            return;
+        }
+        switch_kind(&mut self.cfg, kind);
+        for (f, value) in [
+            (Field::Port, self.cfg.port.to_string()),
+            (Field::User, self.cfg.user.clone()),
+            (Field::Database, self.cfg.database.clone()),
+        ] {
+            self.set_text(f, &value, window, cx);
+        }
+        self.refresh_url_placeholder(window, cx);
+        self.refresh_name_placeholder(window, cx);
+        self.touched(cx);
+    }
+
+    fn refresh_url_placeholder(&self, window: &mut Window, cx: &mut Context<Self>) {
+        let placeholder = url_placeholder(self.cfg.kind);
+        self.input(Field::Url)
+            .clone()
+            .update(cx, |i, cx| i.set_placeholder(placeholder, window, cx));
     }
 
     /// Sets the SSL mode (the SSL select).
@@ -636,10 +681,10 @@ impl ConnectionDialog {
         .detach();
     }
 
-    fn title(&self) -> String {
+    pub fn title(&self) -> String {
         match &self.editing {
             Some(c) => format!("Edit {}", c.config.name),
-            None => "New PostgreSQL data source".into(),
+            None => format!("New {} data source", self.cfg.kind.label()),
         }
     }
 
@@ -727,6 +772,36 @@ impl ConnectionDialog {
                 menu
             })
             .into_any_element()
+    }
+
+    /// The server type picker: PostgreSQL / Redis, with their logos.
+    fn render_kinds(&self, cx: &mut Context<Self>) -> gpui::Div {
+        let p = cx.palette().clone();
+        let current = self.cfg.kind;
+        div().flex().gap(px(8.)).children(DbKind::ALL.map(|kind| {
+            let on = kind == current;
+            div()
+                .id(match kind {
+                    DbKind::Postgres => "kind-postgres",
+                    DbKind::Redis => "kind-redis",
+                })
+                .flex()
+                .flex_1()
+                .items_center()
+                .justify_center()
+                .gap(px(8.))
+                .h(px(34.))
+                .rounded(theme::radius::MD)
+                .border_1()
+                .border_color(if on { p.ring } else { p.input })
+                .when(on, |d| d.bg(p.muted))
+                .when(!on, |d| d.cursor_pointer().hover(|s| s.bg(p.hover)))
+                .text_size(theme::text::SM)
+                .text_color(if on { p.body } else { p.soft })
+                .on_click(cx.listener(move |this, _, window, cx| this.set_kind(kind, window, cx)))
+                .child(super::chrome::db_logo(kind, 16.))
+                .child(kind.label())
+        }))
     }
 
     fn render_colors(&self, cx: &mut Context<Self>) -> gpui::Div {
@@ -915,10 +990,15 @@ impl Render for ConnectionDialog {
             .is_none()
             .then(|| Self::field("URL", self.text_input(Field::Url, true, &p), cx));
 
+        let redis = self.cfg.kind == DbKind::Redis;
         let ssl = Self::select(
             "ssl-mode",
             self.cfg.ssl_mode,
-            SSL_MODES.to_vec(),
+            if redis {
+                REDIS_SSL_MODES.to_vec()
+            } else {
+                SSL_MODES.to_vec()
+            },
             |this, mode, cx| this.set_ssl_mode(mode, cx),
             cx,
         );
@@ -946,9 +1026,11 @@ impl Render for ConnectionDialog {
             .child(
                 div()
                     .id("read-only-wrap")
-                    .tooltip(super::chrome::tooltip(
-                        "Sessions run with default_transaction_read_only = on: the server refuses writes",
-                    ))
+                    .tooltip(super::chrome::tooltip(if redis {
+                        "Commands that write are refused before they are sent"
+                    } else {
+                        "Sessions run with default_transaction_read_only = on: the server refuses writes"
+                    }))
                     .child(super::checkbox::sized(
                         check_box("read-only", "Read-only", &p)
                             .checked(self.cfg.read_only)
@@ -1099,6 +1181,7 @@ impl Render for ConnectionDialog {
             .gap(px(12.))
             .text_color(p.body)
             .child(header)
+            .child(self.render_kinds(cx))
             .children(url)
             .child(Self::field(
                 "Name",
@@ -1110,12 +1193,24 @@ impl Render for ConnectionDialog {
                 Self::field("Port", self.text_input(Field::Port, false, &p), cx),
             ))
             .child(row2(
-                Self::field("User", self.text_input(Field::User, false, &p), cx),
+                Self::field(
+                    if redis {
+                        "User (ACL, optional)"
+                    } else {
+                        "User"
+                    },
+                    self.text_input(Field::User, false, &p),
+                    cx,
+                ),
                 Self::field("Password", self.text_input(Field::Password, false, &p), cx),
             ))
             .child(row2(
-                Self::field("Database", self.text_input(Field::Database, false, &p), cx),
-                Self::field("SSL", ssl, cx),
+                Self::field(
+                    if redis { "Database index" } else { "Database" },
+                    self.text_input(Field::Database, false, &p),
+                    cx,
+                ),
+                Self::field(if redis { "TLS" } else { "SSL" }, ssl, cx),
             ))
             .child(row2(
                 Self::field("Environment", env, cx),
@@ -1173,6 +1268,14 @@ fn check_box(id: &'static str, label: &'static str, p: &Palette) -> Checkbox {
 /// edits that one. Called by the explorer (p3/explorer) and the ⌘O action.
 pub fn open(edit: Option<String>, window: &mut Window, cx: &mut App) {
     open_view(edit, window, cx);
+}
+
+/// Opens the dialog for a new data source of `kind` (the explorer's "Add
+/// PostgreSQL" / "Add Redis").
+pub fn open_new(kind: DbKind, window: &mut Window, cx: &mut App) {
+    if let Some(view) = open_view(None, window, cx) {
+        view.update(cx, |v, cx| v.set_kind(kind, window, cx));
+    }
 }
 
 /// [`open`], returning the dialog's view (tests, dev hooks).

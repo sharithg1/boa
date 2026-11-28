@@ -472,6 +472,7 @@ fn pg_config(id: &str) -> Option<ConnConfig> {
     let host = std::env::var("PGHOST").ok().filter(|h| !h.is_empty())?;
     let var = |k: &str, d: &str| std::env::var(k).unwrap_or_else(|_| d.to_owned());
     Some(ConnConfig {
+        kind: Default::default(),
         id: id.into(),
         name: "local".into(),
         host,

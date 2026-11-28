@@ -103,6 +103,8 @@ pub struct SqlHighlighter {
     tokens: Vec<Token>,
     catalog: SharedCatalog,
     palette: Palette,
+    /// A Redis console: redis-cli syntax (`boa_core::redis::tokenize`).
+    redis: bool,
 }
 
 impl SqlHighlighter {
@@ -111,11 +113,24 @@ impl SqlHighlighter {
             tokens: Vec::new(),
             catalog,
             palette,
+            redis: false,
+        }
+    }
+
+    /// A highlighter for Redis commands.
+    pub fn redis(palette: Palette) -> Self {
+        Self {
+            redis: true,
+            ..Self::new(SharedCatalog::default(), palette)
         }
     }
 
     /// Re-tokenizes `text`.
     pub fn retokenize(&mut self, text: &str) {
+        if self.redis {
+            self.tokens = boa_core::redis::tokenize(text);
+            return;
+        }
         let catalog = self.catalog.borrow();
         tokenize_into(text, catalog.as_ref(), &mut self.tokens);
     }
@@ -127,7 +142,7 @@ impl SqlHighlighter {
 
 impl InputHighlighter for SqlHighlighter {
     fn language(&self) -> SharedString {
-        SharedString::new_static("sql")
+        SharedString::new_static(if self.redis { "redis" } else { "sql" })
     }
 
     fn update(
@@ -167,8 +182,15 @@ impl InputHighlighter for SqlHighlighter {
     }
 }
 
+/// The factory a Redis console's editor uses.
+pub fn redis_factory(palette: Palette) -> InputHighlighterFactory {
+    Rc::new(move |_language: &str| {
+        Some(Box::new(SqlHighlighter::redis(palette.clone())) as Box<dyn InputHighlighter>)
+    })
+}
+
 /// The factory the editor state calls to create its highlighter (whatever
-/// language name it asks for: the editor is SQL only).
+/// language name it asks for: SQL; Redis consoles use [`redis_factory`]).
 pub fn factory(catalog: SharedCatalog, palette: Palette) -> InputHighlighterFactory {
     Rc::new(move |_language: &str| {
         Some(

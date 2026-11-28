@@ -723,7 +723,7 @@ impl SettingsView {
     }
 
     /// SettingsView.tsx `ConnectionsPage`: every saved connection with its
-    /// state, `PostgreSQL · postgresql://… · meta` and Connect / Disconnect /
+    /// state, `PostgreSQL · postgresql://… · meta` (or `Redis · redis://…`) and Connect / Disconnect /
     /// Retry now.
     fn render_connections(&self, cx: &mut Context<Self>) -> gpui::AnyElement {
         let p = cx.palette().clone();
@@ -740,7 +740,8 @@ impl SettingsView {
                     let st = conns.state_of(&id);
                     let meta = conn_meta(&st, conns.latency_ms(&id));
                     let line = format!(
-                        "PostgreSQL · {} · {meta}",
+                        "{} · {} · {meta}",
+                        c.config.kind.label(),
                         conns.connection_string(&id, None).unwrap_or_default()
                     );
                     (id, c.config.name.clone(), st, line)

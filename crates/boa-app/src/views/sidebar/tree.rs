@@ -9,13 +9,15 @@
 //! `…/#table/name`, `…/name/column`, `…/name/#keys` (`#foreign keys`,
 //! `#indexes`, `#checks`) and `…/#keys/item`.
 
-use boa_core::connections::Environment as SavedEnvironment;
+use boa_core::connections::{DbKind, Environment as SavedEnvironment, SslMode};
 use boa_core::grid::conn_tag::{ConnectionColor, Environment, connection_color};
 use boa_core::grid::format::compact_count;
 use boa_core::grid::table_meta::{KeyKind, MetaFolderKind, column_keys, meta_folders};
 use boa_core::model::TableKind;
+use boa_core::redis::{RedisKey, folder_ends};
 use boa_core::state::prefs::{Prefs, Scope};
 use boa_core::state::session::schema_scope_key;
+use std::collections::BTreeMap;
 
 use crate::models::catalogs::{Catalogs, DbKey, picked_databases, picked_schemas};
 use crate::models::connections::ConnState;
@@ -25,8 +27,10 @@ use crate::models::connections::ConnState;
 pub struct ConnInfo {
     pub id: String,
     pub name: String,
-    /// The database it connects to first (the default database pick).
+    pub kind: DbKind,
+    /// The database it connects to first (the default database pick; Redis: `db0`…).
     pub database: String,
+    pub ssl_mode: SslMode,
     pub user: String,
     pub host: String,
     pub port: u16,
@@ -54,7 +58,9 @@ impl ConnInfo {
         Self {
             id: c.id.clone(),
             name: c.name.clone(),
-            database: c.database.clone(),
+            kind: c.kind,
+            database: c.default_database(),
+            ssl_mode: c.ssl_mode,
             user: c.user.clone(),
             host: c.host.clone(),
             port: c.port,
@@ -92,8 +98,23 @@ pub fn encode_uri_component(s: &str) -> String {
     out
 }
 
-/// store.ts `connectionString`: `postgresql://user@host:port/database` (no password).
+/// store.ts `connectionString`: `postgresql://user@host:port/database` (no
+/// password); Redis: `redis://user@host:port/<index>` (`rediss://` with TLS).
 pub fn connection_string(c: &ConnInfo, database: Option<&str>) -> String {
+    if c.kind == DbKind::Redis {
+        let scheme = match c.ssl_mode {
+            SslMode::Disable | SslMode::Prefer => "redis",
+            _ => "rediss",
+        };
+        let auth = if c.user.is_empty() {
+            String::new()
+        } else {
+            format!("{}@", encode_uri_component(&c.user))
+        };
+        let db = database.unwrap_or(&c.database);
+        let index = boa_core::redis::db_index(db).unwrap_or(0);
+        return format!("{scheme}://{auth}{}:{}/{index}", c.host, c.port);
+    }
     let auth = if c.user.is_empty() {
         String::new()
     } else {
@@ -216,6 +237,22 @@ pub enum NodeKind {
         definition: String,
         key: Option<KeyKind>,
     },
+    /// A folder of Redis keys sharing a `:`-separated prefix (`user:`).
+    KeyFolder {
+        key: DbKey,
+        /// The prefix, separator included (`user:`, `cache::`).
+        prefix: String,
+    },
+    /// "Load more keys": the database lists only its first keys.
+    MoreKeys {
+        key: DbKey,
+    },
+    /// A Redis key and its type (`string`, `hash`, …).
+    RedisKey {
+        key: DbKey,
+        name: String,
+        ty: String,
+    },
 }
 
 /// One visible row.
@@ -256,13 +293,20 @@ impl Node {
     pub fn selects(&self) -> bool {
         matches!(
             self.kind,
-            NodeKind::Database { .. } | NodeKind::Schema { .. } | NodeKind::Table { .. }
+            NodeKind::Database { .. }
+                | NodeKind::Schema { .. }
+                | NodeKind::Table { .. }
+                | NodeKind::RedisKey { .. }
         )
     }
 
-    /// Double-click / ↵ opens it (tables: a pinned tab) instead of toggling.
+    /// Double-click / ↵ opens it (tables: a pinned tab; Redis keys: a console
+    /// showing the value) instead of toggling.
     pub fn opens(&self) -> bool {
-        matches!(self.kind, NodeKind::Table { .. })
+        matches!(
+            self.kind,
+            NodeKind::Table { .. } | NodeKind::RedisKey { .. } | NodeKind::MoreKeys { .. }
+        )
     }
 }
 
@@ -353,6 +397,23 @@ pub fn build(input: &TreeInput<'_>) -> Vec<Node> {
             let is_active = input.active == Some(&key);
             let catalog = input.catalogs.get(&key);
             let loading = catalog.is_some_and(|c| c.loading);
+            if conn.kind == DbKind::Redis {
+                redis_database(
+                    &mut out,
+                    &RedisDb {
+                        cid,
+                        did: &did,
+                        db,
+                        key: &key,
+                        active: is_active,
+                        current: is_active && input.active_table.is_none(),
+                        catalog,
+                        expanded: expanded(&did),
+                        is_expanded: &expanded,
+                    },
+                );
+                continue;
+            }
             let badge = catalog.filter(|c| c.names_loaded).map(|c| ScopeBadge {
                 kind: ScopeKind::Schemas,
                 key: schema_scope_key(cid, db),
@@ -534,6 +595,139 @@ pub fn build(input: &TreeInput<'_>) -> Vec<Node> {
         }
     }
     out
+}
+
+/// What [`redis_database`] draws.
+struct RedisDb<'a> {
+    cid: &'a str,
+    did: &'a str,
+    db: &'a str,
+    key: &'a DbKey,
+    active: bool,
+    current: bool,
+    catalog: Option<&'a crate::models::catalogs::Catalog>,
+    expanded: bool,
+    /// Whether a row (a key folder) is expanded.
+    is_expanded: &'a dyn Fn(&str) -> bool,
+}
+
+/// A Redis database row (its key count) and, expanded, one row per key.
+fn redis_database(out: &mut Vec<Node>, d: &RedisDb<'_>) {
+    let loading = d.catalog.is_some_and(|c| c.loading);
+    let keys = d.catalog.and_then(|c| c.redis.clone());
+    let mut node = Node::new(
+        d.did.to_owned(),
+        Some(d.cid),
+        1,
+        NodeKind::Database {
+            key: d.key.clone(),
+            active: d.active,
+        },
+        d.db,
+    );
+    node.meta = match (&keys, loading) {
+        (_, true) => Meta::Database {
+            badge: None,
+            loading: true,
+        },
+        (Some(k), false) => Meta::Text(compact_count(k.total)),
+        (None, false) => Meta::None,
+    };
+    node.expandable = true;
+    node.current = d.current;
+    out.push(node);
+    if !d.expanded {
+        return;
+    }
+    let Some(keys) = keys else { return };
+    let all: Vec<&RedisKey> = keys.keys.iter().collect();
+    redis_key_rows(out, d, &all, 0, d.did, 2, keys.truncated);
+    if keys.truncated {
+        let mut node = Node::new(
+            format!("{}/#more", d.did),
+            Some(d.did),
+            2,
+            NodeKind::MoreKeys { key: d.key.clone() },
+            &format!(
+                "Load more keys ({} of {} shown)",
+                compact_count(keys.keys.len() as u64),
+                compact_count(keys.total),
+            ),
+        );
+        node.italic = true;
+        out.push(node);
+    } else if keys.keys.is_empty() {
+        out.push(Node::new(
+            format!("{}/#empty", d.did),
+            Some(d.did),
+            2,
+            NodeKind::Status,
+            "No keys",
+        ));
+    }
+}
+
+/// The rows of `keys` (all under the folder `name[..prefix]`), at `depth`:
+/// sub-folders first (by their `:` prefix, with their key counts; their keys
+/// only when expanded), then the keys themselves, labelled without the
+/// folder's prefix. `partial`: only the first keys are listed, so folder
+/// counts are lower bounds (`829+`).
+fn redis_key_rows(
+    out: &mut Vec<Node>,
+    d: &RedisDb<'_>,
+    keys: &[&RedisKey],
+    prefix: usize,
+    parent: &str,
+    depth: usize,
+    partial: bool,
+) {
+    let mut folders: BTreeMap<&str, Vec<&RedisKey>> = BTreeMap::new();
+    let mut leaves: Vec<&RedisKey> = Vec::new();
+    for k in keys {
+        match folder_ends(&k.name).into_iter().find(|&e| e > prefix) {
+            Some(end) => folders.entry(&k.name[..end]).or_default().push(k),
+            None => leaves.push(k),
+        }
+    }
+    for (folder, inside) in folders {
+        let fid = format!("{}/#keys/{folder}", d.did);
+        let label = folder[prefix..].trim_end_matches(':');
+        let mut node = Node::new(
+            fid.clone(),
+            Some(parent),
+            depth,
+            NodeKind::KeyFolder {
+                key: d.key.clone(),
+                prefix: folder.to_owned(),
+            },
+            label,
+        );
+        node.mono = true;
+        node.expandable = true;
+        let count = compact_count(inside.len() as u64);
+        node.meta = Meta::Text(if partial { format!("{count}+") } else { count });
+        out.push(node);
+        if (d.is_expanded)(&fid) {
+            redis_key_rows(out, d, &inside, folder.len(), &fid, depth + 1, partial);
+        }
+    }
+    for k in leaves {
+        let short = &k.name[prefix.min(k.name.len())..];
+        let mut node = Node::new(
+            format!("{}/#key/{}", d.did, k.name),
+            Some(parent),
+            depth,
+            NodeKind::RedisKey {
+                key: d.key.clone(),
+                name: k.name.clone(),
+                ty: k.ty.clone(),
+            },
+            if short.is_empty() { &k.name } else { short },
+        );
+        node.mono = true;
+        node.meta = Meta::Text(k.ty.clone());
+        out.push(node);
+    }
 }
 
 /// A navigation key of the tree (Sidebar.tsx `Tree` `onKeyDown`).

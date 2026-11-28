@@ -15,6 +15,7 @@ pub mod grid;
 pub mod history;
 pub mod model;
 pub mod pg;
+pub mod redis;
 pub mod sql;
 pub mod ssh;
 pub mod state;

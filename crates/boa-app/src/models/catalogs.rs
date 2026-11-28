@@ -20,12 +20,16 @@
 //!   its first shown database plus the shown ones left expanded load (store.ts
 //!   `connect`). Catalogs of deleted connections are dropped.
 //!
+//! Redis databases hold their keys instead (`Backend::redis_keys`, in
+//! [`Catalog::redis`]); they have no schemas.
+//!
 //! Feeds the explorer, the right panel, completion and highlighting.
 
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::sync::Arc;
 
 use boa_core::model::{Schema, Table};
+use boa_core::redis::RedisKeys;
 use boa_core::state::prefs::{Prefs as CorePrefs, Scope};
 use boa_core::state::session::{ScopeSel, database_schemas, schema_scope_key, shown_databases};
 use gpui::{Context, Subscription, Task};
@@ -70,6 +74,11 @@ pub struct Catalog {
     pub loaded: bool,
     /// A forced load was asked for while one was running: run it after.
     pub(crate) force_pending: bool,
+    /// Redis databases: the keys (instead of schemas).
+    pub redis: Option<Arc<RedisKeys>>,
+    /// Redis databases: how many keys to list (0: [`boa_core::redis::KEY_LIMIT`]);
+    /// "Load more keys" raises it.
+    pub redis_limit: usize,
 }
 
 impl Catalog {
@@ -205,7 +214,7 @@ impl Catalogs {
                 let Some(conn) = connections.get(&key) else {
                     continue;
                 };
-                (conn.config.database.clone(), connections.databases(&key))
+                (conn.config.default_database(), connections.databases(&key))
             };
             for database in picked_databases(now, &key, &own, &names) {
                 if now.is_expanded(&schema_scope_key(&key, &database)) {
@@ -239,7 +248,7 @@ impl Catalogs {
                     if !self.connected.contains(id) {
                         newly.push((
                             id.clone(),
-                            c.config.database.clone(),
+                            c.config.default_database(),
                             connections.databases(id),
                         ));
                     }
@@ -276,6 +285,19 @@ impl Catalogs {
         }
     }
 
+    /// Lists more of a Redis database's keys (the explorer's "Load more keys").
+    pub fn load_more_keys(&mut self, key: DbKey, cx: &mut Context<Self>) {
+        if let Some(c) = self.catalogs.get_mut(&key) {
+            if c.loading {
+                return;
+            }
+            let shown = c.redis.as_ref().map_or(0, |k| k.keys.len());
+            c.redis_limit = shown.max(c.redis_limit).max(boa_core::redis::KEY_LIMIT)
+                + boa_core::redis::KEY_STEP;
+        }
+        self.load(key, true, cx);
+    }
+
     /// Re-reads a database from scratch (the explorer's Refresh).
     pub fn refresh(&mut self, key: DbKey, cx: &mut Context<Self>) {
         self.load(key, true, cx);
@@ -291,7 +313,7 @@ impl Catalogs {
         let Some(state) = AppState::try_global(cx).cloned() else {
             return;
         };
-        {
+        let is_redis = {
             let connections = state.connections.read(cx);
             if !connections.is_connected(&key.connection_id)
                 || !connections
@@ -300,7 +322,10 @@ impl Catalogs {
             {
                 return;
             }
-        }
+            connections
+                .get(&key.connection_id)
+                .is_some_and(|c| c.config.kind.is_redis())
+        };
         let catalog = self.catalogs.entry(key.clone()).or_default();
         if catalog.loading {
             catalog.force_pending |= force;
@@ -308,11 +333,40 @@ impl Catalogs {
         }
         catalog.loading = true;
         catalog.error = None;
+        let redis_limit = catalog.redis_limit.max(boa_core::redis::KEY_LIMIT);
         let known_names = (catalog.names_loaded && !force).then(|| catalog.schema_names.clone());
         cx.notify();
 
         let backend = state.backend.clone();
         let task_key = key.clone();
+        if is_redis {
+            let task = cx.spawn(async move |this, cx| {
+                let result = backend
+                    .redis_keys(&key.connection_id, &key.database, redis_limit)
+                    .await;
+                this.update(cx, |this, cx| match result {
+                    Ok(keys) => {
+                        let Some(c) = this.catalogs.get_mut(&key) else {
+                            return;
+                        };
+                        c.redis = Some(Arc::new(keys));
+                        c.names_loaded = true;
+                        c.loaded = true;
+                        c.loading = false;
+                        let again = std::mem::take(&mut c.force_pending);
+                        this.tasks.remove(&key);
+                        cx.notify();
+                        if again {
+                            this.load(key.clone(), true, cx);
+                        }
+                    }
+                    Err(e) => this.failed(&key, e.message, cx),
+                })
+                .ok();
+            });
+            self.tasks.insert(task_key, task);
+            return;
+        }
         let task = cx.spawn(async move |this, cx| {
             let DbKey {
                 connection_id: id,

@@ -1,6 +1,6 @@
 # Notes for coding agents
 
-Boa is a macOS PostgreSQL client in Rust on [GPUI](https://gpui.rs/) and
+Boa is a macOS PostgreSQL (and Redis) client in Rust on [GPUI](https://gpui.rs/) and
 [gpui-component](https://github.com/longbridge/gpui-component).
 
 ## Layout
@@ -50,6 +50,8 @@ cargo deny --locked check licenses
 ```
 
 Without `PGHOST` the live Postgres tests skip, so always set it before merging.
+The live Redis tests skip without `BOA_REDIS_PORT` / `BOA_REDIS_AUTH_PORT`
+(see `crates/boa-core/README.md`).
 While iterating, `cargo test -p boa-core` (or `-p boa-app`) is much cheaper.
 Dependencies must stay MIT / Apache-2.0 / BSD-style or unmodified MPL-2.0
 (`deny.toml`); no GPL / AGPL / LGPL.

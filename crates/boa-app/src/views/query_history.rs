@@ -1529,7 +1529,7 @@ pub mod dev {
             let conns = state.connections.read(cx);
             conns.saved.first().map(|c| DbKey {
                 connection_id: c.config.id.clone(),
-                database: c.config.database.clone(),
+                database: c.config.default_database(),
             })
         });
         if let Some(key) = key {

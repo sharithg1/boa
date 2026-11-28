@@ -8,7 +8,9 @@ fn conn(id: &str, state: ConnState) -> ConnInfo {
     ConnInfo {
         id: id.into(),
         name: format!("{id} name"),
+        kind: DbKind::Postgres,
         database: "app".into(),
+        ssl_mode: SslMode::Prefer,
         user: "boa".into(),
         host: "localhost".into(),
         port: 5432,
@@ -574,4 +576,133 @@ fn connection_url_and_environment() {
         Some(Environment::Production)
     );
     assert_eq!(environment(None), None);
+}
+
+#[test]
+fn redis_databases_list_their_keys_in_folders() {
+    use boa_core::redis::{RedisKey, RedisKeys};
+    let mut r = conn("r1", connected(&["db0", "db1"]));
+    r.kind = DbKind::Redis;
+    r.database = "db0".into();
+    r.port = 6379;
+    r.user = String::new();
+    let mut cats = Catalogs::new();
+    let key = |name: &str, ty: &str| RedisKey {
+        name: name.into(),
+        ty: ty.into(),
+    };
+    cats.catalogs.insert(
+        DbKey::new("r1", "db0"),
+        Catalog {
+            redis: Some(Arc::new(RedisKeys {
+                keys: vec![
+                    key("0e57", "string"),
+                    key("cache::img-1", "string"),
+                    key("session:1", "hash"),
+                    key("session:2", "hash"),
+                    key("session:eu:3", "hash"),
+                ],
+                total: 12_000,
+                truncated: true,
+            })),
+            names_loaded: true,
+            loaded: true,
+            ..Catalog::default()
+        },
+    );
+    // Folders start collapsed: folders first, then the loose keys.
+    let prefs = prefs_expanded(&["r1", "r1/db0"]);
+    let nodes = tree(std::slice::from_ref(&r), &prefs, &cats);
+    assert_eq!(
+        ids(&nodes),
+        [
+            "r1",
+            "r1/db0",
+            "r1/db0/#keys/cache::",
+            "r1/db0/#keys/session:",
+            "r1/db0/#key/0e57",
+            "r1/db0/#more",
+        ]
+    );
+    // The database row shows the key count (all of them, not just the listed).
+    assert_eq!(nodes[1].meta, Meta::Text("12k".into()));
+    assert_eq!(nodes[3].label, "session");
+    // Only the first keys are listed: folder counts are lower bounds.
+    assert_eq!(nodes[3].meta, Meta::Text("3+".into()));
+    assert!(nodes[3].expandable && !nodes[3].opens());
+    assert!(matches!(&nodes[5].kind, NodeKind::MoreKeys { .. }));
+    assert_eq!(nodes[5].label, "Load more keys (5 of 12k shown)");
+    assert!(nodes[5].opens());
+
+    // Expanded folders nest, keys labelled without the folder's prefix.
+    let prefs = prefs_expanded(&[
+        "r1",
+        "r1/db0",
+        "r1/db0/#keys/session:",
+        "r1/db0/#keys/session:eu:",
+    ]);
+    let nodes = tree(std::slice::from_ref(&r), &prefs, &cats);
+    let rows: Vec<(&str, usize, &str)> = nodes
+        .iter()
+        .map(|n| (n.id.as_str(), n.depth, n.label.as_str()))
+        .collect();
+    assert_eq!(
+        &rows[3..8],
+        [
+            ("r1/db0/#keys/session:", 2, "session"),
+            ("r1/db0/#keys/session:eu:", 3, "eu"),
+            ("r1/db0/#key/session:eu:3", 4, "3"),
+            ("r1/db0/#key/session:1", 3, "1"),
+            ("r1/db0/#key/session:2", 3, "2"),
+        ]
+    );
+    assert!(matches!(
+        &nodes[5].kind,
+        NodeKind::RedisKey { name, ty, .. } if name == "session:eu:3" && ty == "hash"
+    ));
+    assert_eq!(nodes[5].meta, Meta::Text("hash".into()));
+    assert!(nodes[5].opens() && nodes[5].selects() && !nodes[5].expandable);
+    assert_eq!(nodes[5].parent.as_deref(), Some("r1/db0/#keys/session:eu:"));
+    // ↵ on a key opens it; ← goes to its folder.
+    assert_eq!(
+        nav(&nodes, Some("r1/db0/#key/session:1"), NavKey::Enter, |_| {
+            true
+        }),
+        Nav::Open("r1/db0/#key/session:1".into())
+    );
+    assert_eq!(
+        nav(&nodes, Some("r1/db0/#key/session:1"), NavKey::Left, |_| {
+            true
+        }),
+        Nav::Focus("r1/db0/#keys/session:".into())
+    );
+
+    // Loading, then empty.
+    cats.catalogs
+        .get_mut(&DbKey::new("r1", "db0"))
+        .unwrap()
+        .loading = true;
+    let nodes = tree(std::slice::from_ref(&r), &prefs, &cats);
+    assert_eq!(
+        nodes[1].meta,
+        Meta::Database {
+            badge: None,
+            loading: true
+        }
+    );
+    let c = cats.catalogs.get_mut(&DbKey::new("r1", "db0")).unwrap();
+    c.loading = false;
+    c.redis = Some(Arc::new(RedisKeys::default()));
+    let nodes = tree(std::slice::from_ref(&r), &prefs, &cats);
+    assert_eq!(ids(&nodes), ["r1", "r1/db0", "r1/db0/#empty"]);
+    assert_eq!(nodes[1].meta, Meta::Text("0".into()));
+
+    assert_eq!(connection_string(&r, None), "redis://localhost:6379/0");
+    assert_eq!(
+        connection_string(&r, Some("db1")),
+        "redis://localhost:6379/1"
+    );
+    r.user = "app".into();
+    r.ssl_mode = SslMode::Require;
+    assert_eq!(connection_string(&r, None), "rediss://app@localhost:6379/0");
 }

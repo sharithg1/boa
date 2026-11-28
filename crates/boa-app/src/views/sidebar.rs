@@ -30,6 +30,7 @@ mod tests;
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 
+use boa_core::connections::DbKind;
 use boa_core::sql::qualified;
 use boa_core::state::ddl::{DdlAction, DdlRequest, ddl_action};
 use boa_core::state::prefs::apply_order;
@@ -361,6 +362,16 @@ impl Sidebar {
                     .workspaces
                     .update(cx, |w, cx| w.open_table(key, schema, table, true, cx));
             }
+            NodeKind::RedisKey { key, .. } => {
+                let key = key.clone();
+                state
+                    .workspaces
+                    .update(cx, |w, cx| w.select_database(key, cx));
+            }
+            NodeKind::MoreKeys { key } => {
+                let key = key.clone();
+                state.catalogs.update(cx, |c, cx| c.load_more_keys(key, cx));
+            }
             _ => {}
         }
     }
@@ -378,6 +389,8 @@ impl Sidebar {
                         .update(cx, |w, cx| w.open_table(key, schema, table, false, cx));
                 }
             }
+            NodeKind::RedisKey { key, name, ty } => open_redis_key(key, name, ty, cx),
+            NodeKind::MoreKeys { .. } => self.select(node, cx),
             _ => self.toggle(node, cx),
         }
     }
@@ -698,6 +711,41 @@ impl Sidebar {
             NodeKind::Column { name, .. } => {
                 menu.item(copy("Copy name", IconName::Copy, name.clone()))
             }
+            NodeKind::KeyFolder { key, prefix } => {
+                let k1 = key.clone();
+                let scan = format!(
+                    "SCAN 0 MATCH {} COUNT 1000",
+                    boa_core::redis::quote_arg(&format!("{prefix}*"))
+                );
+                menu.item(item("Scan in console", IconName::SquareTerminal).on_click(
+                    move |_, _, cx| {
+                        if let Some(s) = AppState::try_global(cx).cloned() {
+                            let (key, scan) = (k1.clone(), scan.clone());
+                            s.workspaces
+                                .update(cx, |w, cx| w.new_query_tab_running(key, scan, cx));
+                        }
+                    },
+                ))
+                .item(copy("Copy prefix", IconName::Copy, prefix.clone()))
+            }
+            NodeKind::RedisKey { key, name, ty } => {
+                let (k1, k2) = (key.clone(), key.clone());
+                let (n1, t1) = (name.clone(), ty.clone());
+                menu.item(
+                    item("Open in console", IconName::SquareTerminal)
+                        .on_click(move |_, _, cx| open_redis_key(&k1, &n1, &t1, cx)),
+                )
+                .item(copy("Copy name", IconName::Copy, name.clone()))
+                .separator()
+                .item(
+                    item("Refresh", IconName::RefreshCw).on_click(move |_, _, cx| {
+                        if let Some(s) = AppState::try_global(cx).cloned() {
+                            let key = k2.clone();
+                            s.catalogs.update(cx, |c, cx| c.refresh(key, cx));
+                        }
+                    }),
+                )
+            }
             NodeKind::MetaItem {
                 name, definition, ..
             } => menu
@@ -828,6 +876,7 @@ impl Sidebar {
         let has_menu = !matches!(
             node.kind,
             NodeKind::Status
+                | NodeKind::MoreKeys { .. }
                 | NodeKind::NoDatabases
                 | NodeKind::Schema { .. }
                 | NodeKind::Group { .. }
@@ -1032,9 +1081,12 @@ impl Sidebar {
                         .text_size(theme::text::SM)
                         .text_color(p.quiet)
                         .child("No data sources")
-                        .child(
+                        .children(DbKind::ALL.map(|kind| {
                             div()
-                                .id("explorer-add-postgres")
+                                .id(match kind {
+                                    DbKind::Postgres => "explorer-add-postgres",
+                                    DbKind::Redis => "explorer-add-redis",
+                                })
                                 .flex()
                                 .items_center()
                                 .gap(px(6.))
@@ -1047,10 +1099,12 @@ impl Sidebar {
                                 .text_color(p.soft)
                                 .cursor_pointer()
                                 .hover(|s| s.bg(p.hover_strong).text_color(p.body))
-                                .on_click(|_, window, cx| connection_dialog::open(None, window, cx))
-                                .child(icon(IconName::Plus, 14., p.soft))
-                                .child("Add PostgreSQL"),
-                        ),
+                                .on_click(move |_, window, cx| {
+                                    connection_dialog::open_new(kind, window, cx)
+                                })
+                                .child(chrome::db_logo(kind, 14.))
+                                .child(format!("Add {}", kind.label()))
+                        })),
                 )
                 .into_any_element();
         }
@@ -1126,6 +1180,18 @@ impl Sidebar {
                     .child(icon(IconName::Settings, 16., p.quiet))
                     .child(div().truncate().child("Settings")),
             )
+    }
+}
+
+/// Opens a Redis key: a new console on its database showing its value
+/// (`GET`, `HGETALL`, … by type), run at once.
+pub fn open_redis_key(key: &DbKey, name: &str, ty: &str, cx: &mut App) {
+    if let Some(state) = AppState::try_global(cx).cloned() {
+        let command = boa_core::redis::open_command(name, ty);
+        let key = key.clone();
+        state
+            .workspaces
+            .update(cx, |w, cx| w.new_query_tab_running(key, command, cx));
     }
 }
 

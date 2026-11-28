@@ -24,6 +24,7 @@ fn temp_dir(name: &str) -> PathBuf {
 
 fn config(id: &str) -> ConnConfig {
     ConnConfig {
+        kind: Default::default(),
         id: id.into(),
         name: id.into(),
         host: "localhost".into(),
@@ -185,6 +186,7 @@ fn live(dir: &std::path::Path, id: &str) -> Option<ConnConfig> {
     let host = std::env::var("PGHOST").ok()?;
     let env = |k: &str, d: &str| std::env::var(k).unwrap_or_else(|_| d.to_owned());
     let config = ConnConfig {
+        kind: Default::default(),
         id: id.into(),
         name: id.into(),
         host,

@@ -65,6 +65,7 @@ async fn run(this: WeakEntity<Workspace>, cx: &mut AsyncWindowContext) -> Result
         .map_err(|e| e.to_string())?;
     let database = env_or("PGDATABASE", "boa_dev");
     let config = ConnConfig {
+        kind: Default::default(),
         id: "local".into(),
         name: "Local".into(),
         host: env_or("PGHOST", "localhost"),

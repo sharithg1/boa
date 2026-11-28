@@ -22,6 +22,8 @@ tokio = { version = "1.54.1", features = ["sync", "time", "rt", "rt-multi-thread
 indexmap = { version = "2.14.2", features = ["serde"] }
 # Reads the old WebKit localStorage once (state/local_storage.rs). SQLite is public domain.
 rusqlite = { version = "0.40", features = ["bundled"] }
+# Redis connections (redis.rs). BSD-3-Clause.
+redis = { version = "1.8", default-features = false, features = ["tokio-comp", "tokio-native-tls-comp"] }
 
 [dev-dependencies]
 tokio = { version = "1.54.1", features = ["macros", "rt-multi-thread"] }

@@ -350,6 +350,7 @@ mod live {
         {
             let backend = Backend::with_config_dir(dir.path()).unwrap();
             let cfg = ConnConfig {
+                kind: Default::default(),
                 id: ID.into(),
                 name: "Live".into(),
                 host,

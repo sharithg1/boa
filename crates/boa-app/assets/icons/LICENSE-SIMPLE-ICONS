@@ -1,0 +1,7 @@
+postgresql.svg and redis.svg are from Simple Icons v15.22.0
+(https://simpleicons.org, https://github.com/simple-icons/simple-icons),
+released under CC0-1.0 (public domain dedication).
+
+The PostgreSQL and Redis logos are trademarks of their respective owners
+(the PostgreSQL Community Association of Canada; Redis Ltd.). Boa shows them
+only to identify the type of database a connection talks to.

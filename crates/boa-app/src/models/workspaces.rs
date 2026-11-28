@@ -315,6 +315,20 @@ impl Workspaces {
         );
     }
 
+    /// A new console on `key` holding `sql`, which it runs at once (a Redis
+    /// key opened from the explorer).
+    pub fn new_query_tab_running(&mut self, key: DbKey, sql: String, cx: &mut Context<Self>) {
+        self.new_query_tab_with(key.clone(), sql.clone(), cx);
+        let console = self
+            .workspace(&key)
+            .and_then(|ws| ws.active())
+            .and_then(|t| t.console())
+            .cloned();
+        if let Some(console) = console {
+            console.update(cx, |c, cx| c.run(sql, cx));
+        }
+    }
+
     /// Opens a table / view in a tab, selecting its database (store.ts
     /// `openTable`): an explorer click opens a preview tab (replacing the
     /// previous preview), a double click / Enter (`preview: false`) pins it.
@@ -822,7 +836,7 @@ pub fn all_databases(cx: &App) -> Vec<DbKey> {
                 Scope::All => ScopeSel::All,
                 Scope::Some(v) => ScopeSel::Names(v),
             });
-            shown_databases(pick, &c.config.database, &names)
+            shown_databases(pick, &c.config.default_database(), &names)
                 .into_iter()
                 .map(|d| DbKey {
                     connection_id: id.clone(),

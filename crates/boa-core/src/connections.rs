@@ -19,11 +19,51 @@ pub enum SslMode {
     VerifyFull,
 }
 
+/// What kind of server a connection talks to.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash, Default)]
+#[serde(rename_all = "kebab-case")]
+pub enum DbKind {
+    #[default]
+    Postgres,
+    Redis,
+}
+
+impl DbKind {
+    pub const ALL: [DbKind; 2] = [DbKind::Postgres, DbKind::Redis];
+
+    /// Product name (`PostgreSQL`, `Redis`).
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Postgres => "PostgreSQL",
+            Self::Redis => "Redis",
+        }
+    }
+
+    pub fn default_port(self) -> u16 {
+        match self {
+            Self::Postgres => 5432,
+            Self::Redis => 6379,
+        }
+    }
+
+    pub fn is_postgres(&self) -> bool {
+        *self == Self::Postgres
+    }
+
+    pub fn is_redis(&self) -> bool {
+        *self == Self::Redis
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ConnConfig {
     pub id: String,
     pub name: String,
+    /// The server kind. Absent in older files (and never written for
+    /// PostgreSQL, so files stay readable by older versions): PostgreSQL.
+    #[serde(default, skip_serializing_if = "DbKind::is_postgres")]
+    pub kind: DbKind,
     /// Host name, IP, or a Unix socket directory (starting with `/`).
     pub host: String,
     pub port: u16,
@@ -49,6 +89,15 @@ pub struct ConnConfig {
 }
 
 impl ConnConfig {
+    /// The database the connection opens first, as the server's database list
+    /// names it: `database`, or for Redis `db<index>` (`database` holds the index).
+    pub fn default_database(&self) -> String {
+        match self.kind {
+            DbKind::Postgres => self.database.clone(),
+            DbKind::Redis => crate::redis::default_db(self),
+        }
+    }
+
     /// The SSH tunnel to connect through, when enabled.
     pub fn tunnel(&self) -> Option<&SshTunnel> {
         self.ssh.as_ref().filter(|t| t.enabled)

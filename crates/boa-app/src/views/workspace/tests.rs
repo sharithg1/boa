@@ -248,6 +248,7 @@ fn live_database(vcx: &mut VisualTestContext) -> Option<DbKey> {
     let host = std::env::var("PGHOST").ok().filter(|h| !h.is_empty())?;
     let database = env("PGDATABASE", "boa_dev");
     let config = ConnConfig {
+        kind: Default::default(),
         id: LIVE.into(),
         name: "Local".into(),
         host,

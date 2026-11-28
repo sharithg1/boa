@@ -118,6 +118,7 @@ mod tests {
 
     fn cfg() -> ConnConfig {
         ConnConfig {
+            kind: Default::default(),
             id: "c".into(),
             name: "c".into(),
             host: "h".into(),

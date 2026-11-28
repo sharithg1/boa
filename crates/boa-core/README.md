@@ -122,6 +122,7 @@ whoever started it; operations waiting behind it then run.
 | `list_schemas` | `id, database` | `Vec<String>` |
 | `introspect` | `id, database, schemas: Vec<String>` | `Vec<Schema>` |
 | `table_ddl` | `id, database, schema, table` | `String` |
+| `redis_keys` | `id, database` (`db0`…), `limit` | `RedisKeys { keys, total, truncated }` (the first `limit`; the explorer starts with `redis::KEY_LIMIT`) |
 | `run_query` | `id, database, sql, limit, offset` (limit clamped to 1..=100 000) | `QueryResult`; the task carries a `CancelHandle` |
 | `cancel` | `handle: &CancelHandle` | `()`. Cancels that one statement or export, waiting or running |
 | `cancel_query` | `id, database` | `()`. Cancels whatever runs on the session (also an export) |
@@ -164,12 +165,29 @@ Both are `async_channel::Receiver`s, so they can be awaited from any executor.
 Not ported: `quit` and the `quit-requested` event (the GPUI app handles
 quitting), updater / menu / About commands.
 
+## Redis
+
+Connections have a `kind` (`ConnConfig::kind`: `postgres`, the default and
+never written, or `redis`). `Backend` routes Redis connections to `redis.rs`:
+`connect` lists the logical databases as `db0`…`dbN`; `run_query` runs
+redis-cli syntax (one command per line, the last reply as the grid);
+`redis_keys` feeds the explorer; `list_schemas` / `introspect` return
+nothing; `table_ddl`, `apply_edits` and `set_tx_mode` fail with code
+`unsupported`; `export_csv` re-runs the (read-only) commands and writes the rows.
+Read-only connections refuse commands the server flags as writing.
+
 ## Tests
 
 `cargo test -p boa-core`. The live tests (`pg::tests::live_*`,
 `pg::concurrency_tests`, `backend::tests::live_backend`) run when `PGHOST` is
 set, with `PGPORT`, `PGUSER`, `PGPASSWORD`, `PGDATABASE`; `live_postgres`
 creates and drops a `boa_test` schema.
+
+The live Redis tests (`redis::tests::live_*`) run when `BOA_REDIS_PORT` (no
+password) and `BOA_REDIS_AUTH_PORT` (password `boa-secret`) are set, e.g.
+`docker run -d --name boa-redis -p 6379:6379 redis:7` and
+`docker run -d --name boa-redis-auth -p 6380:6379 redis:7 redis-server --requirepass boa-secret`;
+they use db 15 and only `boa_test:*` keys.
 
 `#[ignore]`d checks on this machine's real data (they read a copy, print
 counts only): `state::local_storage::tests::real_local_storage_keys`. The

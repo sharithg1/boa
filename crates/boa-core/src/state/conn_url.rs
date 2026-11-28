@@ -4,19 +4,22 @@
 //! (`ConnectionDialog.test.ts`), mapped to `crate::connections::ConnConfig`.
 //!
 //! The URL field (new connections only) fills the form from a pasted
-//! `postgres://user:password@host:port/database?sslmode=…` as you type; a
+//! `postgres://user:password@host:port/database?sslmode=…` (or
+//! `redis://user:password@host:port/db`, `rediss://` for TLS) as you type; a
 //! string that is not such a URL changes nothing. `parse_url` follows what
 //! the WHATWG `URL` parser did for these (non-special) schemes: the last `@`
 //! ends the user info, the first `:` in it splits user and password, the
 //! authority ends at `/`, `?` or `#`, parts are percent-decoded, the port
 //! defaults to 5432 and the host to `localhost`.
 
-use crate::connections::{ConnConfig, SshAuth, SshTunnel, SslMode};
+use crate::connections::{ConnConfig, DbKind, SshAuth, SshTunnel, SslMode};
 
 /// What a pasted URL sets (`{ config: Partial<ConnConfig>; password? }`):
 /// host and port always, the rest only when the URL has them.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ParsedUrl {
+    /// `postgres(ql)://`: PostgreSQL, `redis://` / `rediss://`: Redis.
+    pub kind: DbKind,
     pub host: String,
     pub port: u16,
     pub user: Option<String>,
@@ -29,6 +32,7 @@ impl ParsedUrl {
     /// Fills the form's fields (`set(parsed.config)`) and returns the
     /// password to put in the password field (and mark as typed), if any.
     pub fn apply(&self, cfg: &mut ConnConfig) -> Option<String> {
+        switch_kind(cfg, self.kind);
         cfg.host.clone_from(&self.host);
         cfg.port = self.port;
         if let Some(user) = &self.user {
@@ -141,9 +145,11 @@ pub fn parse_url(url: &str) -> Option<ParsedUrl> {
         return None;
     }
     let scheme = scheme.to_ascii_lowercase();
-    if scheme != "postgres" && scheme != "postgresql" {
-        return None;
-    }
+    let kind = match scheme.as_str() {
+        "postgres" | "postgresql" => DbKind::Postgres,
+        "redis" | "rediss" => DbKind::Redis,
+        _ => return None,
+    };
     let rest = rest.split('#').next().unwrap_or("");
     let (before_query, query) = rest.split_once('?').unwrap_or((rest, ""));
 
@@ -215,7 +221,12 @@ pub fn parse_url(url: &str) -> Option<ParsedUrl> {
     }
 
     let db = decode_component(path.strip_prefix('/').unwrap_or(path))?;
+    if kind == DbKind::Redis && !db.is_empty() && crate::redis::db_index(&db).is_none() {
+        return None;
+    }
     let ssl_mode = match query_param(query, "sslmode").as_deref() {
+        _ if scheme == "rediss" => Some(SslMode::Require),
+        _ if kind == DbKind::Redis => Some(SslMode::Disable),
         Some("disable") => Some(SslMode::Disable),
         Some("prefer") => Some(SslMode::Prefer),
         Some("require") => Some(SslMode::Require),
@@ -223,12 +234,13 @@ pub fn parse_url(url: &str) -> Option<ParsedUrl> {
         _ => None,
     };
     Some(ParsedUrl {
+        kind,
         host: if host.is_empty() {
             "localhost".into()
         } else {
             host
         },
-        port: port.unwrap_or(5432),
+        port: port.unwrap_or(kind.default_port()),
         user,
         database: (!db.is_empty()).then_some(db),
         ssl_mode,
@@ -286,6 +298,7 @@ pub fn ssh_valid(ssh: Option<&SshTunnel>) -> bool {
 /// `postgres`, `prefer` TLS. `id`: a fresh id (the TS used `crypto.randomUUID()`).
 pub fn blank_config(id: String) -> ConnConfig {
     ConnConfig {
+        kind: Default::default(),
         id,
         name: String::new(),
         host: "localhost".into(),
@@ -300,10 +313,64 @@ pub fn blank_config(id: String) -> ConnConfig {
     }
 }
 
-/// The Name field's placeholder: `<database or postgres>@<host or localhost>`.
+/// A new Redis connection's form: localhost:6379, no user, database 0, no TLS.
+pub fn blank_redis_config(id: String) -> ConnConfig {
+    ConnConfig {
+        kind: DbKind::Redis,
+        port: DbKind::Redis.default_port(),
+        user: String::new(),
+        database: "0".into(),
+        ssl_mode: SslMode::Disable,
+        ..blank_config(id)
+    }
+}
+
+/// Switches the form to `kind`, swapping fields that still hold the other
+/// kind's defaults (port, user, database, TLS mode).
+pub fn switch_kind(cfg: &mut ConnConfig, kind: DbKind) {
+    if cfg.kind == kind {
+        return;
+    }
+    let (from, to) = (blank_kind(cfg.kind), blank_kind(kind));
+    if cfg.port == from.port || cfg.port == 0 {
+        cfg.port = to.port;
+    }
+    if trim(&cfg.user) == from.user {
+        cfg.user = to.user;
+    }
+    if trim(&cfg.database) == from.database || trim(&cfg.database).is_empty() {
+        cfg.database = to.database;
+    }
+    if cfg.ssl_mode == from.ssl_mode || (kind == DbKind::Redis && cfg.ssl_mode == SslMode::Prefer) {
+        cfg.ssl_mode = to.ssl_mode;
+    }
+    cfg.kind = kind;
+}
+
+fn blank_kind(kind: DbKind) -> ConnConfig {
+    match kind {
+        DbKind::Postgres => blank_config(String::new()),
+        DbKind::Redis => blank_redis_config(String::new()),
+    }
+}
+
+/// The default database a kind connects to when the field is empty.
+fn default_database(kind: DbKind) -> &'static str {
+    match kind {
+        DbKind::Postgres => "postgres",
+        DbKind::Redis => "0",
+    }
+}
+
+/// The Name field's placeholder: `<database or postgres>@<host or localhost>`
+/// (Redis: `db<index>@<host>`).
 pub fn name_placeholder(cfg: &ConnConfig) -> String {
-    let db = if cfg.database.is_empty() {
-        "postgres"
+    let redis_db;
+    let db = if cfg.kind == DbKind::Redis {
+        redis_db = crate::redis::db_name(crate::redis::db_index(&cfg.database).unwrap_or(0));
+        redis_db.as_str()
+    } else if cfg.database.is_empty() {
+        default_database(cfg.kind)
     } else {
         &cfg.database
     };
@@ -321,31 +388,78 @@ pub fn name_placeholder(cfg: &ConnConfig) -> String {
 pub fn named(cfg: &ConnConfig) -> ConnConfig {
     let mut out = cfg.clone();
     out.name = match trim(&cfg.name) {
+        "" if cfg.kind == DbKind::Redis => name_placeholder(cfg),
         "" => format!("{}@{}", cfg.database, cfg.host),
         name => name.to_owned(),
     };
     out.host = trim(&cfg.host).to_owned();
     out.user = trim(&cfg.user).to_owned();
     out.database = match trim(&cfg.database) {
-        "" => "postgres".into(),
+        "" => default_database(cfg.kind).into(),
         db => db.to_owned(),
     };
     out.ssh = clean_ssh(cfg.ssh.as_ref());
     out
 }
 
-/// Test / Save are enabled: a host, a user, a port in 1..=65535 and a
-/// valid tunnel (`valid`).
+/// Test / Save are enabled: a host, a user (PostgreSQL; optional for Redis,
+/// whose database must be an index), a port in 1..=65535 and a valid tunnel
+/// (`valid`).
 pub fn form_valid(cfg: &ConnConfig) -> bool {
-    !trim(&cfg.host).is_empty()
-        && !trim(&cfg.user).is_empty()
-        && cfg.port > 0
-        && ssh_valid(cfg.ssh.as_ref())
+    let kind_ok = match cfg.kind {
+        DbKind::Postgres => !trim(&cfg.user).is_empty(),
+        DbKind::Redis => {
+            trim(&cfg.database).is_empty() || crate::redis::db_index(&cfg.database).is_some()
+        }
+    };
+    !trim(&cfg.host).is_empty() && kind_ok && cfg.port > 0 && ssh_valid(cfg.ssh.as_ref())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn redis_urls_and_forms() {
+        let p = parse_url("redis://:s3cret@cache.example.com/3").unwrap();
+        assert_eq!(p.kind, DbKind::Redis);
+        assert_eq!((p.host.as_str(), p.port), ("cache.example.com", 6379));
+        assert_eq!(p.user, None);
+        assert_eq!(p.password.as_deref(), Some("s3cret"));
+        assert_eq!(p.database.as_deref(), Some("3"));
+        assert_eq!(p.ssl_mode, Some(SslMode::Disable));
+        let p = parse_url("rediss://app:pw@h:6380").unwrap();
+        assert_eq!((p.port, p.ssl_mode), (6380, Some(SslMode::Require)));
+        assert_eq!(p.user.as_deref(), Some("app"));
+        assert!(parse_url("redis://h/notanindex").is_none());
+        assert_eq!(parse_url("postgres://h/db").unwrap().kind, DbKind::Postgres);
+
+        let mut cfg = blank_config("x".into());
+        parse_url("redis://h:7000/2").unwrap().apply(&mut cfg);
+        assert_eq!(cfg.kind, DbKind::Redis);
+
+        let mut cfg = blank_config("x".into());
+        switch_kind(&mut cfg, DbKind::Redis);
+        assert_eq!(
+            (cfg.port, cfg.user.as_str(), cfg.database.as_str()),
+            (6379, "", "0")
+        );
+        assert_eq!(cfg.ssl_mode, SslMode::Disable);
+        assert!(form_valid(&cfg), "no user needed for Redis");
+        assert_eq!(name_placeholder(&cfg), "db0@localhost");
+        assert_eq!(named(&cfg).name, "db0@localhost");
+        cfg.port = 7000;
+        cfg.database = "abc".into();
+        assert!(!form_valid(&cfg));
+        cfg.database = "5".into();
+        switch_kind(&mut cfg, DbKind::Postgres);
+        assert_eq!(
+            (cfg.port, cfg.user.as_str(), cfg.database.as_str()),
+            (7000, "postgres", "5")
+        );
+        assert_eq!(cfg.ssl_mode, SslMode::Prefer);
+        assert!(!blank_redis_config("r".into()).kind.is_postgres());
+    }
 
     fn ssh(enabled: bool, host: &str, user: &str, auth: SshAuth) -> SshTunnel {
         SshTunnel {
@@ -417,6 +531,7 @@ mod tests {
         assert_eq!(
             parse_url("postgresql://app%40x:p%3Ass@db.example.com:6543/my%20db?sslmode=require"),
             Some(ParsedUrl {
+                kind: DbKind::Postgres,
                 host: "db.example.com".into(),
                 port: 6543,
                 user: Some("app@x".into()),
@@ -432,6 +547,7 @@ mod tests {
         assert_eq!(
             parse_url("postgres://localhost?sslmode=verify-ca"),
             Some(ParsedUrl {
+                kind: DbKind::Postgres,
                 host: "localhost".into(),
                 port: 5432,
                 user: None,

@@ -871,7 +871,7 @@ pub mod dev {
                     let c = conns.saved.first()?;
                     conns
                         .is_connected(&c.config.id)
-                        .then(|| DbKey::new(c.config.id.clone(), c.config.database.clone()))
+                        .then(|| DbKey::new(c.config.id.clone(), c.config.default_database()))
                 });
                 if let Some(key) = key {
                     cx.update(|cx| {

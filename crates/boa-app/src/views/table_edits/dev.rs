@@ -84,7 +84,7 @@ async fn run(
             .saved
             .iter()
             .find(|c| conns.is_connected(&c.config.id))
-            .map(|c| DbKey::new(c.config.id.clone(), c.config.database.clone()))
+            .map(|c| DbKey::new(c.config.id.clone(), c.config.default_database()))
     })
     .await?;
     let scope_schema = schema.clone();

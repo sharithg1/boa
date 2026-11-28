@@ -121,6 +121,7 @@ impl ConnApi for FakeApi {
 
 fn config(id: &str, name: &str) -> ConnConfig {
     ConnConfig {
+        kind: Default::default(),
         id: id.into(),
         name: name.into(),
         host: "localhost".into(),
@@ -1110,6 +1111,7 @@ mod live {
     fn live_config(id: &str, user: &str) -> ConnConfig {
         let (host, port) = pg().unwrap();
         ConnConfig {
+            kind: Default::default(),
             host,
             port,
             user: user.into(),

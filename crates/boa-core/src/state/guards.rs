@@ -65,6 +65,25 @@ pub fn check_run(sql: &str, ctx: RunContext) -> RunGuard {
     }
 }
 
+/// [`check_run`] for a Redis console: read-only is the backend's to enforce
+/// (it knows which commands write); flushing / swapping databases (and, on
+/// production, deleting keys) asks first.
+pub fn check_redis_run(text: &str, ctx: RunContext) -> RunGuard {
+    let risks = crate::redis::destructive_risks(text, ctx.production);
+    let confirm = needs_confirm(
+        &risks,
+        ConfirmOptions {
+            confirm_destructive: ctx.confirm_destructive,
+            production: ctx.production,
+        },
+    );
+    if confirm {
+        RunGuard::Confirm(risks)
+    } else {
+        RunGuard::Go
+    }
+}
+
 /// Title of the run confirmation.
 pub fn run_confirm_title(production: bool) -> &'static str {
     if production {

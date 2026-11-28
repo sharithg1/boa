@@ -297,6 +297,7 @@ fn connection_popover(active: &ActiveDb, cutout: gpui::Hsla, cx: &App) -> Popove
     let name = active.connection.clone();
     let state = active.status.clone();
     let version = active.server_version().map(str::to_owned);
+    let kind_label = info.as_ref().map_or("PostgreSQL", |i| i.kind.label());
     let url = conns
         .and_then(|c| c.connection_string(&id, None))
         .unwrap_or_default();
@@ -308,7 +309,7 @@ fn connection_popover(active: &ActiveDb, cutout: gpui::Hsla, cx: &App) -> Popove
         })
         .content(move |_, _, cx| {
             let p = cx.palette().clone();
-            let mut details = "PostgreSQL".to_owned();
+            let mut details = kind_label.to_owned();
             if let Some(v) = &version {
                 details.push_str(&format!(" · {v}"));
             }

@@ -85,6 +85,7 @@ fn pg() -> Option<Pg> {
 
 fn config(id: &str, pg: &Pg) -> ConnConfig {
     ConnConfig {
+        kind: Default::default(),
         id: id.into(),
         name: format!("{id} (dev)"),
         host: pg.host.clone(),

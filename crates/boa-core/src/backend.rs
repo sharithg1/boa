@@ -31,14 +31,16 @@
 //! Commands that only touch files (connections, history, CSV writes) run on
 //! the runtime's blocking pool, so the UI thread never does file IO either.
 
-use crate::connections::{self, ConnConfig, SavedConnection};
+use crate::connections::{self, ConnConfig, DbKind, SavedConnection};
 use crate::edits::{ApplyOutcome, EditStatement};
 use crate::error::{CmdError, CmdResult, UNREACHABLE};
+use crate::grid::csv::{CsvDelimiter, CsvOptions as GridCsvOptions, to_csv};
 use crate::history::{self, History};
 use crate::pg::{
     self, CancelHandle, ConnectInfo, CsvOptions, ExportProgress, ExportResult, Pg, PingInfo,
     QueryResult, Schema,
 };
+use crate::redis::{Redis, RedisKeys};
 use crate::tx::TxState;
 use futures_channel::oneshot;
 use std::future::Future;
@@ -110,12 +112,26 @@ pub struct CsvExport {
 #[derive(Debug)]
 struct Inner {
     pg: Pg,
+    redis: Redis,
     history: History,
     config_dir: PathBuf,
     links: Mutex<Vec<async_channel::Sender<LinkEvent>>>,
 }
 
+/// What Redis connections can't do.
+fn not_for_redis(what: &str) -> CmdError {
+    CmdError::code(
+        "unsupported",
+        format!("{what} is not available for Redis connections"),
+    )
+}
+
 impl Inner {
+    /// Connection `id` is an open Redis connection.
+    fn is_redis(&self, id: &str) -> bool {
+        self.redis.is_open(id)
+    }
+
     /// Reports a failure of a call on connection `id` that means it dropped.
     fn watch<T>(&self, id: &str, database: &str, r: &CmdResult<T>) {
         let Err(e) = r else { return };
@@ -154,6 +170,7 @@ impl Drop for Runtime {
         // the SSH tunnels now. Shutting down in the background is allowed
         // from async code too (the last clone may drop on any thread).
         self.inner.pg.close_tunnels();
+        self.inner.redis.close_tunnels();
         if let Some(rt) = self.runtime.take() {
             rt.shutdown_background();
         }
@@ -196,6 +213,7 @@ impl Backend {
             .build()?;
         let inner = Arc::new(Inner {
             pg: Pg::default(),
+            redis: Redis::default(),
             history: History::default(),
             config_dir: dir.into(),
             links: Mutex::new(Vec::new()),
@@ -261,6 +279,7 @@ impl Backend {
     /// exit without dropping the backend).
     pub fn close_tunnels(&self) {
         self.inner.pg.close_tunnels();
+        self.inner.redis.close_tunnels();
     }
 
     // ── Saved connections ────────────────────────────────────────────────
@@ -289,6 +308,7 @@ impl Backend {
         let id = id.to_owned();
         self.spawn(|i| async move {
             i.pg.disconnect(&id).await;
+            i.redis.disconnect(&id).await;
             connections::remove(&i.config_dir, &id)?;
             i.history.clear(&i.config_dir, &id)
         })
@@ -307,7 +327,10 @@ impl Backend {
                 Some(p) => Some(p),
                 None => connections::password(&i.config_dir, &config.id)?,
             };
-            Pg::test(&config, password.as_deref()).await
+            match config.kind {
+                DbKind::Postgres => Pg::test(&config, password.as_deref()).await,
+                DbKind::Redis => Redis::test(&config, password.as_deref()).await,
+            }
         })
     }
 
@@ -320,7 +343,10 @@ impl Backend {
         self.spawn(|i| async move {
             let (config, stored) = connections::get(&i.config_dir, &id)?
                 .ok_or_else(|| CmdError::msg("Unknown connection"))?;
-            i.pg.connect(config, password.or(stored)).await
+            match config.kind {
+                DbKind::Postgres => i.pg.connect(config, password.or(stored)).await,
+                DbKind::Redis => i.redis.connect(config, password.or(stored)).await,
+            }
         })
     }
 
@@ -329,7 +355,13 @@ impl Backend {
     /// `not_connected` if it isn't open, `unreachable` if the server doesn't answer.
     pub fn ping(&self, id: &str) -> BackendTask<PingInfo> {
         let id = id.to_owned();
-        self.spawn(|i| async move { i.pg.ping(&id).await })
+        self.spawn(|i| async move {
+            if i.is_redis(&id) {
+                i.redis.ping(&id).await
+            } else {
+                i.pg.ping(&id).await
+            }
+        })
     }
 
     /// Closes the connection's sessions (rolling back open transactions) and its tunnel.
@@ -337,6 +369,7 @@ impl Backend {
         let id = id.to_owned();
         self.spawn(|i| async move {
             i.pg.disconnect(&id).await;
+            i.redis.disconnect(&id).await;
             Ok(())
         })
     }
@@ -346,6 +379,9 @@ impl Backend {
     pub fn set_tx_mode(&self, id: &str, database: &str, manual: bool) -> BackendTask<TxState> {
         let (id, database) = (id.to_owned(), database.to_owned());
         self.spawn(move |i| async move {
+            if i.is_redis(&id) {
+                return Err(not_for_redis("Transaction modes"));
+            }
             let r = i.pg.set_tx_mode(&id, &database, manual).await;
             i.watch(&id, &database, &r);
             r
@@ -358,6 +394,9 @@ impl Backend {
     pub fn list_schemas(&self, id: &str, database: &str) -> BackendTask<Vec<String>> {
         let (id, database) = (id.to_owned(), database.to_owned());
         self.spawn(|i| async move {
+            if i.is_redis(&id) {
+                return Ok(Vec::new());
+            }
             let r = i.pg.list_schemas(&id, &database).await;
             i.watch(&id, &database, &r);
             r
@@ -373,6 +412,9 @@ impl Backend {
     ) -> BackendTask<Vec<Schema>> {
         let (id, database) = (id.to_owned(), database.to_owned());
         self.spawn(|i| async move {
+            if i.is_redis(&id) {
+                return Ok(Vec::new());
+            }
             let r = i.pg.introspect(&id, &database, &schemas).await;
             i.watch(&id, &database, &r);
             r
@@ -390,6 +432,9 @@ impl Backend {
         let (id, database) = (id.to_owned(), database.to_owned());
         let (schema, table) = (schema.to_owned(), table.to_owned());
         self.spawn(|i| async move {
+            if i.is_redis(&id) {
+                return Err(not_for_redis("DDL"));
+            }
             let r = i.pg.table_ddl(&id, &database, &schema, &table).await;
             i.watch(&id, &database, &r);
             r
@@ -416,9 +461,14 @@ impl Backend {
         let handle = cancel.clone();
         self.spawn(move |i| async move {
             let limit = limit.clamp(1, MAX_PAGE_ROWS);
-            let r =
+            let r = if i.is_redis(&id) {
+                i.redis
+                    .query(&id, &database, &sql, limit, offset, &handle)
+                    .await
+            } else {
                 i.pg.query_with(&id, &database, &sql, limit, offset, &handle)
-                    .await;
+                    .await
+            };
             i.watch(&id, &database, &r);
             r
         })
@@ -429,7 +479,13 @@ impl Backend {
     /// whichever caller started it; ones waiting for the session still run.
     pub fn cancel_query(&self, id: &str, database: &str) -> BackendTask<()> {
         let (id, database) = (id.to_owned(), database.to_owned());
-        self.spawn(|i| async move { i.pg.cancel(&id, &database).await })
+        self.spawn(|i| async move {
+            if i.is_redis(&id) {
+                // Redis can't stop a running command; the console's commands are short.
+                return Ok(());
+            }
+            i.pg.cancel(&id, &database).await
+        })
     }
 
     /// Cancels one statement or export (its [`BackendTask::cancel_handle`]):
@@ -452,7 +508,22 @@ impl Backend {
     ) -> BackendTask<ApplyOutcome> {
         let (id, database) = (id.to_owned(), database.to_owned());
         self.spawn(|i| async move {
+            if i.is_redis(&id) {
+                return Err(not_for_redis("Editing data"));
+            }
             let r = i.pg.apply_edits(&id, &database, &statements).await;
+            i.watch(&id, &database, &r);
+            r
+        })
+    }
+
+    /// A Redis database's keys for the explorer (at most
+    /// `limit`, sorted by name; the explorer starts with
+    /// [`crate::redis::KEY_LIMIT`]).
+    pub fn redis_keys(&self, id: &str, database: &str, limit: usize) -> BackendTask<RedisKeys> {
+        let (id, database) = (id.to_owned(), database.to_owned());
+        self.spawn(move |i| async move {
+            let r = i.redis.keys(&id, &database, limit).await;
             i.watch(&id, &database, &r);
             r
         })
@@ -479,6 +550,40 @@ impl Backend {
         let handle = cancel.clone();
         let result = self
             .spawn(move |i| async move {
+                if i.is_redis(&id) {
+                    // Redis replies are small and already in memory: run the
+                    // (read-only) commands again and write every row.
+                    let started = std::time::Instant::now();
+                    let r = async {
+                        let q = i
+                            .redis
+                            .query(&id, &database, &sql, usize::MAX, 0, &handle)
+                            .await?;
+                        let delimiter = match options.delimiter {
+                            ';' => CsvDelimiter::Semicolon,
+                            '\t' => CsvDelimiter::Tab,
+                            _ => CsvDelimiter::Comma,
+                        };
+                        let names: Vec<&str> = q.columns.iter().map(|c| c.name.as_str()).collect();
+                        let text = to_csv(
+                            &names,
+                            &q.rows,
+                            GridCsvOptions {
+                                delimiter,
+                                header: options.header,
+                            },
+                        );
+                        pg::write_file_atomic(&path, text.as_bytes())?;
+                        Ok(ExportResult {
+                            rows: q.rows.len() as u64,
+                            bytes: text.len() as u64,
+                            ms: started.elapsed().as_millis() as u64,
+                        })
+                    }
+                    .await;
+                    i.watch(&id, &database, &r);
+                    return r;
+                }
                 let send = |p| {
                     let _ = tx.try_send(p);
                 };

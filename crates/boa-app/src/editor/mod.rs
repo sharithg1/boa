@@ -169,6 +169,9 @@ pub struct SqlEditor {
     catalog: SharedCatalog,
     palette: Palette,
     default_schema: Option<String>,
+    /// A Redis console: commands are lines (`boa_core::redis::command_at`),
+    /// no SQL completion.
+    redis: bool,
     /// The statement under the caret (focused, no selection).
     outlined: Option<Range<usize>>,
     /// What is drawn: (range, armed).
@@ -275,6 +278,7 @@ impl SqlEditor {
             catalog,
             palette,
             default_schema: None,
+            redis: false,
             outlined: None,
             drawn: None,
             completion: None,
@@ -344,10 +348,46 @@ impl SqlEditor {
         *self.catalog.borrow_mut() = Some(Catalog::from_schemas(&schemas));
         self.schemas = schemas;
         // A new highlighter re-tokenizes with the catalog.
-        let factory = highlight::factory(self.catalog.clone(), self.palette.clone());
+        let factory = self.highlighter_factory();
         self.state
             .update(cx, |state, cx| state.set_highlighter_factory(factory, cx));
         cx.notify();
+    }
+
+    /// Makes this a Redis console: ⌘↵ runs the command on the caret's line
+    /// (or the selection), and there is no SQL completion.
+    pub fn set_redis(&mut self, redis: bool, cx: &mut Context<Self>) {
+        if self.redis != redis {
+            self.redis = redis;
+            self.completion = None;
+            let factory = self.highlighter_factory();
+            self.state
+                .update(cx, |state, cx| state.set_highlighter_factory(factory, cx));
+            cx.notify();
+        }
+    }
+
+    /// The highlighter for this console's language.
+    fn highlighter_factory(&self) -> gpui_component::input::InputHighlighterFactory {
+        if self.redis {
+            highlight::redis_factory(self.palette.clone())
+        } else {
+            highlight::factory(self.catalog.clone(), self.palette.clone())
+        }
+    }
+
+    /// A Redis console.
+    pub fn is_redis(&self) -> bool {
+        self.redis
+    }
+
+    /// The statement (Redis: the command line) under byte `pos`.
+    fn statement_at(&self, text: &str, pos: usize) -> Option<Range<usize>> {
+        if self.redis {
+            boa_core::redis::command_at(text, pos)
+        } else {
+            statement_on(text, pos)
+        }
     }
 
     /// The console's default schema (completion ranks it first).
@@ -366,7 +406,17 @@ impl SqlEditor {
     /// line between statements.
     pub fn run(&mut self, cx: &mut Context<Self>) -> Option<String> {
         let state = self.state.read(cx);
-        let sql = sql_to_run(&state.value(), state.selected_range())?;
+        let (text, selection) = (state.value(), state.selected_range());
+        let sql = if self.redis {
+            let selected = text.get(selection.clone()).unwrap_or_default();
+            if selected.trim().is_empty() {
+                text[self.statement_at(&text, selection.start)?].to_owned()
+            } else {
+                selected.to_owned()
+            }
+        } else {
+            sql_to_run(&text, selection)?
+        };
         cx.emit(RunStatement { sql: sql.clone() });
         Some(sql)
     }
@@ -389,6 +439,15 @@ impl SqlEditor {
             cx.emit(RunStatement {
                 sql: selected.to_owned(),
             });
+            return;
+        }
+        if self.redis {
+            // One command per line: nothing to choose between.
+            if let Some(r) = self.statement_at(&text, selection.start) {
+                cx.emit(RunStatement {
+                    sql: text[r].to_owned(),
+                });
+            }
             return;
         }
         let items = statements_on(&text, selection.start);
@@ -446,6 +505,10 @@ impl SqlEditor {
     }
 
     fn suggest_at(&mut self, pos: usize, explicit: bool, cx: &mut Context<Self>) {
+        if self.redis {
+            self.completion = None;
+            return;
+        }
         let text = self.text(cx);
         self.completion = complete_at(&text, pos, &self.schemas, self.default_schema(), explicit)
             .map(|result| OpenCompletion {
@@ -633,7 +696,7 @@ impl SqlEditor {
         let selection = state.selected_range();
         let focused = state.focus_handle(cx).is_focused(window);
         self.outlined = if focused && selection.is_empty() {
-            statement_on(&state.value(), selection.start)
+            self.statement_at(&state.value(), selection.start)
         } else {
             None
         };

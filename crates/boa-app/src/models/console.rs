@@ -20,7 +20,7 @@ use boa_core::grid::conn_tag::is_production;
 use boa_core::model::QueryResult;
 use boa_core::pg::CancelHandle;
 use boa_core::sql::guard::Risk;
-use boa_core::state::guards::{RunContext, RunGuard, check_run};
+use boa_core::state::guards::{RunContext, RunGuard, check_redis_run, check_run};
 use boa_core::state::history::OutputEntry;
 use gpui::{Context, EventEmitter, SharedString, Task};
 
@@ -190,7 +190,13 @@ impl Console {
                 .is_some_and(|s| is_production(crate::views::env_tag(s.config.environment))),
             confirm_destructive: state.prefs.read(cx).get().confirm_destructive,
         };
-        match check_run(&text, ctx) {
+        let redis = saved.as_ref().is_some_and(|s| s.config.kind.is_redis());
+        let guard = if redis {
+            check_redis_run(&text, ctx)
+        } else {
+            check_run(&text, ctx)
+        };
+        match guard {
             RunGuard::Go => self.execute(text, cx),
             RunGuard::Blocked(message) => self.fail(text, at, RunError::plain(message), cx),
             RunGuard::Confirm(risks) => cx.emit(ConsoleEvent::ConfirmRun {
@@ -276,8 +282,18 @@ impl Console {
                     w.log(&id, entry, None, true, cx);
                     w.set_bottom_view(view, cx);
                 });
-                // DDL may have changed the tree.
-                if is_ddl(&sql) {
+                // DDL (Redis: writes) may have changed the tree.
+                let redis = state
+                    .connections
+                    .read(cx)
+                    .get(&id)
+                    .is_some_and(|c| c.config.kind.is_redis());
+                let changed = if redis {
+                    boa_core::redis::changes_keys(&sql)
+                } else {
+                    is_ddl(&sql)
+                };
+                if changed {
                     let key = self.key.clone();
                     state.catalogs.update(cx, |c, cx| c.load(key, true, cx));
                 }

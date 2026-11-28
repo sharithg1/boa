@@ -11,10 +11,13 @@ use gpui::{Animation, AnimationExt as _, AnyElement, App, Div, Hsla, Rgba, div, 
 use super::tree::{ConnInfo, Meta, Node, NodeKind};
 use crate::models::connections::ConnState;
 use crate::theme::{self, ActivePalette as _};
-use crate::views::chrome::{IconName, icon};
+use crate::views::chrome::{IconName, db_logo, icon};
 
 /// The `size-3.5` icons of the tree.
 pub const ICON: f32 = 14.;
+
+/// The connection logos: a little larger, so the elephant reads.
+pub const LOGO: f32 = 16.;
 
 /// A connection colour (`0xRRGGBB`) as a GPUI colour.
 pub fn rgb_color(rgb: u32) -> Hsla {
@@ -38,14 +41,15 @@ pub fn conn_state_label(state: &ConnState) -> &'static str {
     }
 }
 
-/// Server icon in the connection's colour, with its state as a badge on the
-/// corner: green connected, pulsing amber connecting, red failed, none (and a
-/// dimmed icon) when offline. `cutout` is the surface colour behind it.
+/// The database's logo (PostgreSQL elephant, Redis), as DataGrip shows it,
+/// with the connection's state as a badge on the corner: green connected,
+/// pulsing amber connecting, red failed, none (and a dimmed logo) when
+/// offline. `cutout` is the surface colour behind it. (The connection
+/// colour shows in [`connection_tag`].)
 pub fn connection_icon(conn: &ConnInfo, cutout: Hsla, cx: &App) -> AnyElement {
     let p = cx.palette();
-    let color = conn.color.map_or(p.quiet, |c| rgb_color(c.rgb()));
     let offline = matches!(conn.state, ConnState::Disconnected);
-    let server = icon(IconName::Server, ICON, color).when(offline, |i| i.opacity(0.55));
+    let server = db_logo(conn.kind, LOGO).when(offline, |i| i.opacity(0.55));
     let badge = |bg: Hsla| {
         div()
             .absolute()
@@ -60,7 +64,7 @@ pub fn connection_icon(conn: &ConnInfo, cutout: Hsla, cx: &App) -> AnyElement {
     let wrap = div()
         .relative()
         .flex_none()
-        .size(px(ICON))
+        .size(px(LOGO))
         .flex()
         .items_center()
         .justify_center()
@@ -84,9 +88,10 @@ pub fn connection_icon(conn: &ConnInfo, cutout: Hsla, cx: &App) -> AnyElement {
 }
 
 /// ConnectionTag.tsx: the environment badge (`PROD`) in the connection
-/// colour, plus a lock when read-only. None when it has neither.
+/// colour (a dot in that colour when it has a colour but no environment),
+/// plus a lock when read-only. None when it has none of them.
 pub fn connection_tag(conn: &ConnInfo, cx: &App) -> Option<Div> {
-    if conn.environment.is_none() && !conn.read_only {
+    if conn.environment.is_none() && !conn.read_only && conn.color.is_none() {
         return None;
     }
     let p = cx.palette();
@@ -106,6 +111,17 @@ pub fn connection_tag(conn: &ConnInfo, cx: &App) -> Option<Div> {
                 .font_weight(gpui::FontWeight::SEMIBOLD)
                 .text_color(gpui::white())
                 .child(env.badge()),
+        );
+    }
+    if conn.environment.is_none()
+        && let Some(c) = conn.color
+    {
+        tag = tag.child(
+            div()
+                .flex_none()
+                .size(px(7.))
+                .rounded_full()
+                .bg(rgb_color(c.rgb())),
         );
     }
     if conn.read_only {
@@ -155,6 +171,9 @@ pub fn node_icon(node: &Node, cutout: Hsla, cx: &App) -> Option<AnyElement> {
                 icon(IconName::KeyRound, ICON, key_color(*key))
             }
         },
+        NodeKind::RedisKey { .. } => icon(IconName::KeyRound, ICON, p.dim),
+        NodeKind::KeyFolder { .. } => icon(IconName::Folder, ICON, p.quiet),
+        NodeKind::MoreKeys { .. } => icon(IconName::Ellipsis, ICON, p.link),
     };
     Some(el.into_any_element())
 }
@@ -174,6 +193,10 @@ pub fn node_label(node: &Node, cx: &App) -> Div {
         NodeKind::Status | NodeKind::NoDatabases => {
             label.text_color(p.dim).child(node.label.clone())
         }
+        NodeKind::MoreKeys { .. } => label
+            .text_color(p.link)
+            .cursor_pointer()
+            .child(node.label.clone()),
         _ => label
             .when(node.mono, |d| d.font_family(theme::MONO_FONT))
             .when(node.italic, |d| d.italic())

@@ -5,6 +5,7 @@
 use std::cell::Cell;
 use std::rc::Rc;
 
+use boa_core::connections::DbKind;
 use gpui::prelude::*;
 use gpui::{
     App, ClickEvent, Div, ElementId, Hsla, MouseButton, Pixels, SharedString, Stateful, Window,
@@ -102,22 +103,45 @@ pub enum BoaIcon {
     History,
     /// Lucide `undo-2` (revert all changes).
     Undo2,
+    /// The PostgreSQL elephant (Simple Icons, CC0): PostgreSQL connections.
+    Postgres,
+    /// The Redis logo (Simple Icons, CC0): Redis connections.
+    Redis,
 }
 
 impl BoaIcon {
-    pub const ALL: &[BoaIcon] = &[BoaIcon::History, BoaIcon::Undo2];
+    pub const ALL: &[BoaIcon] = &[
+        BoaIcon::History,
+        BoaIcon::Undo2,
+        BoaIcon::Postgres,
+        BoaIcon::Redis,
+    ];
 
     /// The SVG's asset path.
     pub fn path(self) -> &'static str {
         match self {
             BoaIcon::History => "icons/history.svg",
             BoaIcon::Undo2 => "icons/undo-2.svg",
+            BoaIcon::Postgres => "icons/postgresql.svg",
+            BoaIcon::Redis => "icons/redis.svg",
         }
     }
 
     pub fn icon(self) -> Icon {
         Icon::default().path(self.path())
     }
+}
+
+/// A database kind's logo (the PostgreSQL elephant, the Redis cube), `size`
+/// px square, in its brand colour: what identifies a connection's type, as
+/// in DataGrip's Database Explorer.
+pub fn db_logo(kind: DbKind, size: f32) -> Icon {
+    let (logo, rgb) = match kind {
+        // PostgreSQL's #336791, lightened so it reads on the dark sidebar too.
+        DbKind::Postgres => (BoaIcon::Postgres, 0x4f8fcf),
+        DbKind::Redis => (BoaIcon::Redis, 0xdc382d),
+    };
+    logo.icon().size(px(size)).text_color(gpui::rgb(rgb))
 }
 
 /// A dropdown-menu row at TitleBar.tsx's "+" menu size: 28 px tall, a 16 px
